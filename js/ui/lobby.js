@@ -5,32 +5,40 @@ import { render, html, esc, $, $$, toast } from './dom.js';
 import { app, soyHost, salirDeSala } from '../main.js';
 import { parseModo } from '../engine/engine.js';
 
+// Vive fuera de `dibujar`: Realtime repinta el Lobby durante los updates del
+// bucle, pero no debe recrear un botón habilitado ni iniciar un segundo bucle.
+const iniciosDraftEnCurso = new Set();
+
 export function pantallaLobby(root) {
+  const code = app.estado.room.code;
   dibujar(root);
   const handler = () => dibujar(root);
   document.addEventListener('sala:cambio', handler);
   // main.js llama esta limpieza al cambiar de pantalla
-  app.limpiezaPantalla = () => document.removeEventListener('sala:cambio', handler);
+  app.limpiezaPantalla = () => {
+    document.removeEventListener('sala:cambio', handler);
+    iniciosDraftEnCurso.delete(code);
+  };
 }
 
 function dibujar(root) {
   const { room, players } = app.estado;
   const host = soyHost();
   const esLocal = room.code === 'LOCAL';
+  const iniciandoDraft = iniciosDraftEnCurso.has(room.code);
   const salaLlena = players.length >= MAX_JUGADORES;
   const salaSobrepasada = players.length > MAX_JUGADORES;
 
   render(root, html`
     <div class="lobby">
       <header class="cabecera-sala">
-        <button id="btn-salir" class="btn btn-mini">← Salir</button>
+        <button id="btn-salir" class="btn btn-mini" ${iniciandoDraft ? 'disabled' : ''}>← Salir</button>
         <div class="ticket">
           <span class="ticket-label">CÓDIGO DE SALA</span>
           <span class="ticket-codigo">${esc(room.code)}</span>
         </div>
-        <span class="chip-modo">${parseModo(room.modo).modo === 'almanaque' ? '📖 ALMANAQUE'
-          : parseModo(room.modo).modo === 'penales' ? '🧤 SOLO PENALES'
-          : parseModo(room.modo).modo === 'mundial2026' ? '🏆 MUNDIAL 2026' : '⭐ CLÁSICO'}
+        <span class="chip-modo">${parseModo(room.modo).modo === 'penales'
+          ? '🧤 SOLO PENALES' : '📖 SELECCIONES HISTÓRICAS'}
           · ${parseModo(room.modo).total} EQUIPOS</span>
       </header>
 
@@ -53,12 +61,12 @@ function dibujar(root) {
 
       ${host ? html`
         <div class="acciones-centro">
-          <button id="btn-repartir" class="btn btn-primario btn-grande">
+          <button id="btn-repartir" class="btn btn-primario btn-grande" ${iniciandoDraft ? 'disabled' : ''}>
             🎲 Empezar el draft
           </button>
           <p class="nota">${esLocal
-            ? 'Armarás tu once a punta de sorteos y jugarás contra selecciones de la máquina.'
-            : 'Cada DT armará su once: en cada turno se sortea una selección histórica y elige un jugador.'}</p>
+            ? 'Armarás tu equipo de 11 titulares y 7 suplentes a punta de sorteos, y jugarás contra selecciones de la máquina.'
+            : 'Cada DT armará 11 titulares y 7 suplentes: en cada turno se sortea una selección histórica y elige un jugador.'}</p>
         </div>` : html`
         <p class="nota centrada esperando">Esperando que ${esc(players.find(p => p.id === room.host_id)?.name ?? 'el anfitrión')} sortee los planteles…</p>`}
     </div>
@@ -78,21 +86,29 @@ function dibujar(root) {
 
   if (host) {
     $('#btn-repartir', root).addEventListener('click', async () => {
+      if (iniciosDraftEnCurso.has(room.code)) return;
       const btn = $('#btn-repartir', root);
       if (players.length > MAX_JUGADORES) {
         toast(`Máximo ${MAX_JUGADORES} jugadores. Hay ${players.length}.`, true);
         return;
       }
+      iniciosDraftEnCurso.add(room.code);
       btn.disabled = true;
+      $('#btn-salir', root).disabled = true;
+      const puedeContinuar = () =>
+        app.code === room.code && app.estado?.room?.status === 'lobby' && soyHost();
       try {
         for (const p of players) {
+          if (!puedeContinuar()) { iniciosDraftEnCurso.delete(room.code); return; }
           await net.actualizarJugador(room.code, p.id, {
             squad_key: null, ready: false, lineup: null, formacion: null,
           });
         }
+        if (!puedeContinuar()) { iniciosDraftEnCurso.delete(room.code); return; }
         await net.actualizarSala(room.code, { status: 'draft' });
       } catch (e) {
-        btn.disabled = false;
+        iniciosDraftEnCurso.delete(room.code);
+        if (app.estado?.room?.code === room.code && app.estado.room.status === 'lobby') dibujar(root);
         toast('No se pudo iniciar el draft: ' + e.message, true);
       }
     });

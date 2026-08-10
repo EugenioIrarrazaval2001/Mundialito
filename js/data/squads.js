@@ -14,7 +14,14 @@ const CC = {
   cod: 'cd', civ: 'ci', egy: 'eg', rsa: 'za', tun: 'tn', aus: 'au', irq: 'iq', irn: 'ir',
   jpn: 'jp', jor: 'jo', qat: 'qa', ksa: 'sa', uzb: 'uz', can: 'ca', cuw: 'cw', hai: 'ht',
   pan: 'pa', nzl: 'nz',
-  // urs / gdr / tch / yug: países que ya no existen — sin bandera moderna equivalente
+  // urs / gdr / tch / yug: sin equivalente moderno; usan assets históricos locales
+};
+
+const BANDERAS_HISTORICAS = {
+  urs: { src: 'assets/flags/historical/urs.svg', proporcion: 2 },
+  gdr: { src: 'assets/flags/historical/gdr.svg', proporcion: 5 / 3 },
+  tch: { src: 'assets/flags/historical/tch.svg', proporcion: 3 / 2 },
+  yug: { src: 'assets/flags/historical/yug.svg', proporcion: 2 },
 };
 
 const DEFAULT_PUESTOS = {
@@ -54,6 +61,23 @@ export const PUESTO_LINEA = {
   MCD: 'MED', MC: 'MED', MCO: 'MED', MI: 'MED', MD: 'MED',
   EI: 'DEL', DC: 'DEL', ED: 'DEL',
 };
+
+// Conversiones posicionales generales. Cada entrada representa exclusivamente
+// un salto directo: nunca se recorren destinos como nuevos orígenes.
+// POR queda aislado al no aparecer en esta tabla.
+export const CONVERSIONES_PUESTO = Object.freeze({
+  LI: Object.freeze({ DFC: -3, LD: -4, MI: -3 }),
+  DFC: Object.freeze({ LI: -3, LD: -3, MCD: -3 }),
+  LD: Object.freeze({ DFC: -3, LI: -4, MD: -3 }),
+  MCD: Object.freeze({ DFC: -3, MC: -2 }),
+  MC: Object.freeze({ MCD: -2, MCO: -2, MI: -2, MD: -2 }),
+  MCO: Object.freeze({ MC: -2, MI: -2, MD: -2, EI: -2, ED: -2, DC: -3 }),
+  MI: Object.freeze({ MC: -2, MCO: -2, LI: -3, EI: -2, MD: -4 }),
+  MD: Object.freeze({ MC: -2, MCO: -2, LD: -3, ED: -2, MI: -4 }),
+  EI: Object.freeze({ MI: -2, MCO: -2, DC: -3, ED: -3 }),
+  ED: Object.freeze({ MD: -2, MCO: -2, DC: -3, EI: -3 }),
+  DC: Object.freeze({ MCO: -3, EI: -3, ED: -3 }),
+});
 
 function puestosPorOrden(pos, nivel, orden) {
   if (pos === 'POR') return [['POR', nivel]];
@@ -117,8 +141,54 @@ export function puestosJugador(jugador) {
   return jugador.puestos?.length ? jugador.puestos : normalizarPuestos(jugador.pos, jugador.nivel, null, jugador.nombre);
 }
 
+function resolverEstadoPuesto(jugador, puesto) {
+  const puestosExplicitos = puestosJugador(jugador);
+  if (!puestosExplicitos.length) {
+    return { permitido: false, tipo: 'imposible', penalizacion: null, nivel: null };
+  }
+
+  const nivelMaximoExplicito = Math.max(...puestosExplicitos.map(p => p.nivel));
+  const posicionExplicita = puestosExplicitos.find(p => p.puesto === puesto);
+
+  // Prioridad 1: una definición individual nunca se sustituye por la tabla.
+  if (posicionExplicita) {
+    const penalizacion = posicionExplicita.nivel - nivelMaximoExplicito;
+    return {
+      permitido: true,
+      tipo: penalizacion === 0 ? 'natural' : 'adaptado',
+      penalizacion,
+      nivel: posicionExplicita.nivel,
+    };
+  }
+
+  // Prioridad 2: se evalúa un único salto desde cada posición explícita y se
+  // conserva el mejor nivel. Los resultados nunca vuelven a entrar a la tabla.
+  let mejorAdaptacion = null;
+  for (const origen of puestosExplicitos) {
+    const penalizacion = CONVERSIONES_PUESTO[origen.puesto]?.[puesto];
+    if (penalizacion === undefined) continue;
+
+    const nivel = origen.nivel + penalizacion;
+    if (
+      mejorAdaptacion === null
+      || nivel > mejorAdaptacion.nivel
+      || (nivel === mejorAdaptacion.nivel && penalizacion > mejorAdaptacion.penalizacion)
+    ) {
+      mejorAdaptacion = { permitido: true, tipo: 'adaptado', penalizacion, nivel };
+    }
+  }
+
+  // Prioridad 3: sin puesto explícito ni conversión directa, no está permitido.
+  return mejorAdaptacion
+    ?? { permitido: false, tipo: 'imposible', penalizacion: null, nivel: null };
+}
+
+export function estadoPuestoJugador(jugador, puesto) {
+  return resolverEstadoPuesto(jugador, puesto);
+}
+
 export function nivelEnPuesto(jugador, puesto) {
-  return puestosJugador(jugador).find(p => p.puesto === puesto)?.nivel ?? null;
+  return resolverEstadoPuesto(jugador, puesto).nivel;
 }
 
 function squad(key, pais, anio, flag, apodo, color1, color2, jugadores) {
@@ -139,6 +209,12 @@ function squad(key, pais, anio, flag, apodo, color1, color2, jugadores) {
 
 // bandera como imagen (compatible con Windows)
 export function bandera(squadObj, alto = 15) {
+  const historica = BANDERAS_HISTORICAS[squadObj?.key?.slice(0, 3)];
+  if (historica) {
+    const ancho = Math.round(alto * historica.proporcion);
+    return `<img class="bandera" width="${ancho}" height="${alto}" alt=""
+      src="${historica.src}">`;
+  }
   if (!squadObj?.cc) return '';
   const ancho = Math.round(alto * 4 / 3);
   return `<img class="bandera" width="${ancho}" height="${alto}" alt=""
@@ -485,13 +561,7 @@ export const SQUADS = [
     ['Ziyech', 'DEL', 84], ['En-Nesyri', 'DEL', 80], ['Boufal', 'DEL', 78],
     ['Aboukhlal', 'DEL', 74], ['Cheddira', 'DEL', 72], ['Hamdallah', 'DEL', 74],
   ]),
-  // ---- todos los Chile mundialistas ----
-  squad('chi1930', 'Chile', 1930, '🇨🇱', 'Los Pioneros del 30', '#D52B1E', '#1B3D8F', [
-    ['Cortés', 'POR', 68],
-    ['Poirier', 'DEF', 66], ['Chaparro', 'DEF', 64], ['Morales', 'DEF', 62], ['Riveros', 'DEF', 60],
-    ['Saavedra', 'MED', 72], ['A. Torres', 'MED', 66], ['Elgueta', 'MED', 60],
-    ['Subiabre', 'DEL', 74], ['Vidal', 'DEL', 70], ['Schneeberger', 'DEL', 68], ['Villalobos', 'DEL', 64],
-  ]),
+  // ---- Chile mundialistas disponibles ----
   squad('chi1950', 'Chile', 1950, '🇨🇱', 'Los del Maracaná', '#D52B1E', '#1B3D8F', [
     ['Livingstone', 'POR', 82],
     ['Farías', 'DEF', 68], ['Álvarez', 'DEF', 66], ['Roldán', 'DEF', 66], ['Busquets', 'DEF', 62],
@@ -1296,83 +1366,89 @@ export const SQUADS = [
 
 // ============================================================================
 // MODO "MUNDIAL 2026": las 48 selecciones clasificadas al Mundial de
-// Canadá-México-EE.UU. Estos planteles SOLO se usan en el modo "mundial2026"
-// (no aparecen en Clásico, Almanaque ni Solo Penales). Niveles realistas con
-// tope ~94 (Mbappé), basados en el rendimiento actual de cada jugador.
+// Canadá-México-EE.UU. Dieciséis de estos planteles también se incorporan al
+// modo principal mediante un pool derivado. Esos 16 planteles fueron
+// actualizados tras el torneo y tienen un tope de nivel de 98.
 // ============================================================================
 export const SQUADS_2026 = [
   // ---------- Candidatos ----------
   squad('arg2026', 'Argentina', 2026, '🇦🇷', 'La Scaloneta', '#75AADB', '#FFFFFF', [
-    ['E. Martínez', 'POR', 90], ['G. Rulli', 'POR', 76],
-    ['Molina', 'DEF', 80, [['LD', 80]]], ['Cuti Romero', 'DEF', 88, [['DFC', 88]]],
-    ['L. Martínez', 'DEF', 85, [['DFC', 85]]], ['Otamendi', 'DEF', 81, [['DFC', 81]]],
-    ['Tagliafico', 'DEF', 79, [['LI', 79]]], ['Acuña', 'DEF', 78, [['LI', 78]]],
-    ['Montiel', 'DEF', 76, [['LD', 76]]],
-    ['De Paul', 'MED', 84], ['Mac Allister', 'MED', 87], ['Enzo Fernández', 'MED', 86],
-    ['Paredes', 'MED', 79], ['Lo Celso', 'MED', 80], ['Palacios', 'MED', 79],
-    ['Messi', 'DEL', 92, [['MCO', 92], ['ED', 92], ['EI', 91]]],
-    ['J. Álvarez', 'DEL', 88, [['DC', 88]]], ['Lautaro Martínez', 'DEL', 88, [['DC', 88]]],
-    ['Garnacho', 'DEL', 81, [['EI', 81], ['ED', 81]]], ['Nico González', 'DEL', 80, [['ED', 80], ['EI', 80]]],
-    ['Almada', 'DEL', 79, [['MCO', 79], ['EI', 79]]],
+    ['E. Martínez', 'POR', 90], ['G. Rulli', 'POR', 72],
+    ['Molina', 'DEF', 79, [['LD', 79]]], ['Cuti Romero', 'DEF', 87, [['DFC', 87]]],
+    ['L. Martínez', 'DEF', 84, [['DFC', 84]]], ['Otamendi', 'DEF', 79, [['DFC', 79]]],
+    ['Tagliafico', 'DEF', 79, [['LI', 79]]], ['Montiel', 'DEF', 75, [['LD', 75]]],
+    ['De Paul', 'MED', 86], ['Mac Allister', 'MED', 89], ['Enzo Fernández', 'MED', 87],
+    ['Paredes', 'MED', 81], ['Lo Celso', 'MED', 79], ['Palacios', 'MED', 76],
+    ['Nico Paz', 'MED', 81, [['MCO', 81], ['MC', 80]]],
+    ['Messi', 'DEL', 95, [['MCO', 95], ['ED', 95], ['EI', 94]]],
+    ['J. Álvarez', 'DEL', 88, [['DC', 88]]], ['Lautaro Martínez', 'DEL', 87, [['DC', 87]]],
+    ['Nico González', 'DEL', 79, [['ED', 79], ['EI', 79]]],
+    ['Almada', 'DEL', 80, [['MCO', 80], ['EI', 80]]],
+    ['Giuliano Simeone', 'DEL', 79, [['ED', 79], ['DC', 78]]],
   ]),
   squad('fra2026', 'Francia', 2026, '🇫🇷', 'Les Bleus', '#1B3D8F', '#FFFFFF', [
-    ['Maignan', 'POR', 88], ['Samba', 'POR', 76],
-    ['Koundé', 'DEF', 84, [['LD', 84], ['DFC', 84]]], ['Saliba', 'DEF', 86, [['DFC', 86]]],
-    ['Upamecano', 'DEF', 83, [['DFC', 83]]], ['Konaté', 'DEF', 82, [['DFC', 82]]],
-    ['T. Hernández', 'DEF', 84, [['LI', 84]]], ['L. Hernández', 'DEF', 81, [['LI', 81], ['DFC', 81]]],
-    ['Pavard', 'DEF', 82, [['LD', 82], ['DFC', 82]]],
-    ['Tchouaméni', 'MED', 86], ['Camavinga', 'MED', 85], ['Rabiot', 'MED', 81],
-    ['Zaïre-Emery', 'MED', 80], ['Fofana', 'MED', 78],
-    ['Mbappé', 'DEL', 94, [['EI', 94], ['DC', 93]]], ['Dembélé', 'DEL', 87, [['ED', 87], ['DC', 86]]],
-    ['Griezmann', 'DEL', 87, [['MCO', 87], ['DC', 86]]], ['Olise', 'DEL', 84, [['ED', 84], ['MD', 83]]],
-    ['Thuram', 'DEL', 83, [['DC', 83]]], ['Kolo Muani', 'DEL', 81, [['DC', 81]]],
-    ['Barcola', 'DEL', 81, [['EI', 81], ['ED', 81]]],
+    ['Maignan', 'POR', 87], ['Samba', 'POR', 70],
+    ['Koundé', 'DEF', 84, [['LD', 84], ['DFC', 84]]], ['Saliba', 'DEF', 87, [['DFC', 87]]],
+    ['Upamecano', 'DEF', 81, [['DFC', 81]]], ['Konaté', 'DEF', 80, [['DFC', 80]]],
+    ['T. Hernández', 'DEF', 84, [['LI', 84]]], ['L. Hernández', 'DEF', 76, [['LI', 76], ['DFC', 76]]],
+    ['Malo Gusto', 'DEF', 77, [['LD', 77]]],
+    ['Tchouaméni', 'MED', 85], ['Rabiot', 'MED', 79, [['MCO', 79], ['MC', 79]]],
+    ['Zaïre-Emery', 'MED', 75, [['MI', 75], ['MC', 75]]],
+    ['N\'Golo Kanté', 'MED', 82, [['MCD', 82], ['MC', 81]]], ['Manu Koné', 'MED', 78],
+    ['Rayan Cherki', 'MED', 82, [['MCO', 82]]],
+    ['Mbappé', 'DEL', 97, [['EI', 97], ['DC', 96]]], ['Dembélé', 'DEL', 90, [['ED', 90], ['DC', 89]]],
+    ['Olise', 'DEL', 93, [['ED', 93], ['MD', 92]]], ['Thuram', 'DEL', 77, [['DC', 77]]],
+    ['Barcola', 'DEL', 82, [['EI', 82], ['ED', 82]]],
+    ['Désiré Doué', 'DEL', 86, [['EI', 86], ['ED', 86], ['MCO', 85]]],
   ]),
   squad('bra2026', 'Brasil', 2026, '🇧🇷', 'A Seleção', '#FFD700', '#1B7A3D', [
-    ['Alisson', 'POR', 88], ['Ederson', 'POR', 84],
-    ['Danilo', 'DEF', 78, [['LD', 78], ['DFC', 78]]], ['Marquinhos', 'DEF', 85, [['DFC', 85]]],
-    ['Gabriel Magalhães', 'DEF', 84, [['DFC', 84]]], ['Militão', 'DEF', 84, [['DFC', 84], ['LD', 83]]],
-    ['Wendell', 'DEF', 75, [['LI', 75]]], ['Vanderson', 'DEF', 77, [['LD', 77]]],
-    ['Bruno Guimarães', 'MED', 85], ['Lucas Paquetá', 'MED', 82], ['André', 'MED', 78],
-    ['Joelinton', 'MED', 78], ['Gerson', 'MED', 77],
-    ['Vinícius Jr.', 'DEL', 92, [['EI', 92]]], ['Rodrygo', 'DEL', 87, [['ED', 87], ['EI', 87]]],
-    ['Raphinha', 'DEL', 86, [['ED', 86], ['EI', 85]]], ['Endrick', 'DEL', 81, [['DC', 81]]],
-    ['Martinelli', 'DEL', 81, [['EI', 81]]], ['Matheus Cunha', 'DEL', 80, [['DC', 80]]],
-    ['Pedro', 'DEL', 80, [['DC', 80]]],
+    ['Alisson', 'POR', 85], ['Ederson', 'POR', 79],
+    ['Danilo', 'DEF', 76, [['LD', 76], ['DFC', 76]]], ['Marquinhos', 'DEF', 82, [['DFC', 82]]],
+    ['Gabriel Magalhães', 'DEF', 83, [['DFC', 83]]], ['Alex Sandro', 'DEF', 76, [['LI', 76]]],
+    ['Bremer', 'DEF', 80, [['DFC', 80]]], ['Douglas Santos', 'DEF', 76, [['LI', 76]]],
+    ['Bruno Guimarães', 'MED', 88], ['Lucas Paquetá', 'MED', 80],
+    ['Casemiro', 'MED', 79, [['MCD', 79]]], ['Fabinho', 'MED', 77, [['MCD', 77]]],
+    ['Vinícius Jr.', 'DEL', 91, [['EI', 91]]], ['Raphinha', 'DEL', 85, [['ED', 85], ['EI', 84]]],
+    ['Endrick', 'DEL', 79, [['DC', 79]]], ['Martinelli', 'DEL', 80, [['EI', 80]]],
+    ['Matheus Cunha', 'DEL', 83, [['DC', 83]]], ['Neymar Jr.', 'DEL', 84, [['EI', 84], ['MCO', 84]]],
+    ['Luiz Henrique', 'DEL', 80, [['ED', 80]]], ['Igor Thiago', 'DEL', 77, [['DC', 77]]],
   ]),
   squad('esp2026', 'España', 2026, '🇪🇸', 'La Roja', '#C60B1E', '#FFC400', [
-    ['Unai Simón', 'POR', 84], ['Raya', 'POR', 83],
-    ['Carvajal', 'DEF', 83, [['LD', 83]]], ['Le Normand', 'DEF', 81, [['DFC', 81]]],
-    ['Cubarsí', 'DEF', 82, [['DFC', 82]]], ['Laporte', 'DEF', 81, [['DFC', 81]]],
-    ['Cucurella', 'DEF', 80, [['LI', 80]]], ['Balde', 'DEF', 80, [['LI', 80]]],
-    ['Rodri', 'MED', 91], ['Pedri', 'MED', 89], ['Gavi', 'MED', 84],
-    ['Fabián Ruiz', 'MED', 82], ['Zubimendi', 'MED', 81], ['Dani Olmo', 'MED', 84, [['MCO', 84]]],
-    ['Lamine Yamal', 'DEL', 90, [['ED', 90]]], ['Nico Williams', 'DEL', 86, [['EI', 86]]],
-    ['Oyarzabal', 'DEL', 82, [['DC', 82], ['EI', 81]]], ['Morata', 'DEL', 80, [['DC', 80]]],
+    ['Unai Simón', 'POR', 90], ['Raya', 'POR', 78],
+    ['Cubarsí', 'DEF', 91, [['DFC', 91]]], ['Laporte', 'DEF', 85, [['DFC', 85]]],
+    ['Cucurella', 'DEF', 85, [['LI', 85]]], ['Pedro Porro', 'DEF', 79, [['LD', 79]]],
+    ['Álex Grimaldo', 'DEF', 75, [['LI', 75]]],
+    ['Rodri', 'MED', 96], ['Pedri', 'MED', 91], ['Gavi', 'MED', 80],
+    ['Fabián Ruiz', 'MED', 84], ['Zubimendi', 'MED', 81], ['Dani Olmo', 'MED', 85, [['MCO', 85]]],
+    ['Mikel Merino', 'MED', 83],
+    ['Lamine Yamal', 'DEL', 93, [['ED', 93]]], ['Nico Williams', 'DEL', 87, [['EI', 87]]],
+    ['Oyarzabal', 'DEL', 90, [['DC', 90], ['EI', 89]]],
     ['Ferran Torres', 'DEL', 80, [['EI', 80], ['DC', 79]]],
+    ['Yeremy Pino', 'DEL', 72, [['ED', 72], ['EI', 71]]],
   ]),
   squad('eng2026', 'Inglaterra', 2026, '🏴', 'The Three Lions', '#FFFFFF', '#0A2342', [
-    ['Pickford', 'POR', 83], ['Henderson', 'POR', 76],
-    ['Alexander-Arnold', 'DEF', 84, [['LD', 84]]], ['Stones', 'DEF', 84, [['DFC', 84]]],
-    ['Guéhi', 'DEF', 81, [['DFC', 81]]], ['Konsa', 'DEF', 77, [['DFC', 77]]],
-    ['Shaw', 'DEF', 79, [['LI', 79]]], ['Colwill', 'DEF', 79, [['DFC', 79], ['LI', 78]]],
-    ['K. Walker', 'DEF', 79, [['LD', 79]]],
-    ['Bellingham', 'MED', 90], ['Rice', 'MED', 86], ['Foden', 'MED', 87],
-    ['C. Palmer', 'MED', 86], ['Mainoo', 'MED', 80], ['Gallagher', 'MED', 78],
-    ['Kane', 'DEL', 89, [['DC', 89]]], ['Saka', 'DEL', 88, [['ED', 88]]],
-    ['Rashford', 'DEL', 81, [['EI', 81], ['DC', 80]]], ['Gordon', 'DEL', 80, [['EI', 80]]],
-    ['Watkins', 'DEL', 81, [['DC', 81]]], ['Bowen', 'DEL', 79, [['ED', 79]]],
+    ['Pickford', 'POR', 87], ['Henderson', 'POR', 70],
+    ['Nico O\'Reilly', 'DEF', 75], ['Stones', 'DEF', 82, [['DFC', 82]]],
+    ['Guéhi', 'DEF', 84, [['DFC', 84]]], ['Konsa', 'DEF', 78, [['DFC', 78]]],
+    ['Reece James', 'DEF', 82, [['LD', 82]]], ['Trevoh Chalobah', 'DEF', 78, [['DFC', 78]]],
+    ['Bellingham', 'MED', 94], ['Rice', 'MED', 88], ['Elliot Anderson', 'MED', 84],
+    ['Morgan Rogers', 'MED', 82, [['MCO', 82]]], ['Mainoo', 'MED', 78],
+    ['Eberechi Eze', 'MED', 82, [['MCO', 82], ['EI', 81]]],
+    ['Kane', 'DEL', 91, [['DC', 91]]], ['Saka', 'DEL', 91, [['ED', 91]]],
+    ['Rashford', 'DEL', 82, [['EI', 82], ['DC', 81]]], ['Gordon', 'DEL', 81, [['EI', 81]]],
+    ['Watkins', 'DEL', 78, [['DC', 78]]], ['Noni Madueke', 'DEL', 78, [['ED', 78]]],
+    ['Ivan Toney', 'DEL', 77, [['DC', 77]]],
   ]),
   squad('por2026', 'Portugal', 2026, '🇵🇹', 'As Quinas', '#006600', '#FF0000', [
-    ['Diogo Costa', 'POR', 84], ['José Sá', 'POR', 76],
-    ['Cancelo', 'DEF', 83, [['LD', 83], ['LI', 83]]], ['Rúben Dias', 'DEF', 86, [['DFC', 86]]],
-    ['Gonçalo Inácio', 'DEF', 80, [['DFC', 80]]], ['António Silva', 'DEF', 79, [['DFC', 79]]],
-    ['Nuno Mendes', 'DEF', 84, [['LI', 84]]], ['Dalot', 'DEF', 80, [['LD', 80]]],
-    ['Bruno Fernandes', 'MED', 88], ['Bernardo Silva', 'MED', 87], ['Vitinha', 'MED', 84],
-    ['João Neves', 'MED', 82], ['Rúben Neves', 'MED', 80], ['Otávio', 'MED', 76],
-    ['Rafael Leão', 'DEL', 85, [['EI', 85]]], ['C. Ronaldo', 'DEL', 83, [['DC', 83]]],
-    ['Diogo Jota', 'DEL', 82, [['DC', 82], ['EI', 81]]], ['João Félix', 'DEL', 81, [['MCO', 81], ['DC', 80]]],
-    ['Gonçalo Ramos', 'DEL', 80, [['DC', 80]]], ['Pedro Neto', 'DEL', 81, [['ED', 81], ['EI', 81]]],
+    ['Diogo Costa', 'POR', 88], ['José Sá', 'POR', 69],
+    ['Cancelo', 'DEF', 81, [['LD', 81], ['LI', 81]]], ['Rúben Dias', 'DEF', 84, [['DFC', 84]]],
+    ['Gonçalo Inácio', 'DEF', 78, [['DFC', 78]]], ['Nélson Semedo', 'DEF', 77, [['LD', 77]]],
+    ['Nuno Mendes', 'DEF', 86, [['LI', 86]]], ['Dalot', 'DEF', 78, [['LD', 78]]],
+    ['Bruno Fernandes', 'MED', 87], ['Bernardo Silva', 'MED', 84], ['Vitinha', 'MED', 85],
+    ['João Neves', 'MED', 82], ['Rúben Neves', 'MED', 77], ['Matheus Nunes', 'MED', 79],
+    ['Rafael Leão', 'DEL', 83, [['EI', 83]]], ['C. Ronaldo', 'DEL', 82, [['DC', 82]]],
+    ['Francisco Conceição', 'DEL', 80, [['ED', 80]]], ['João Félix', 'DEL', 78, [['MCO', 78], ['DC', 77]]],
+    ['Gonçalo Ramos', 'DEL', 79, [['DC', 79]]], ['Pedro Neto', 'DEL', 79, [['ED', 79], ['EI', 79]]],
   ]),
 
   // ---------- Sudamérica ----------
@@ -1386,13 +1462,13 @@ export const SQUADS_2026 = [
     ['Maxi Araújo', 'DEL', 74], ['Cavani', 'DEL', 75],
   ]),
   squad('col2026', 'Colombia', 2026, '🇨🇴', 'Los Cafeteros', '#FCD116', '#003893', [
-    ['Camilo Vargas', 'POR', 78], ['Montero', 'POR', 73],
-    ['D. Muñoz', 'DEF', 80], ['Lucumí', 'DEF', 78], ['Cuesta', 'DEF', 77], ['Mojica', 'DEF', 76],
-    ['Yerry Mina', 'DEF', 78], ['Dávinson Sánchez', 'DEF', 78],
-    ['James Rodríguez', 'MED', 84], ['Lerma', 'MED', 79], ['Richard Ríos', 'MED', 80],
-    ['Castaño', 'MED', 76], ['Uribe', 'MED', 76],
-    ['Luis Díaz', 'DEL', 88], ['Jhon Córdoba', 'DEL', 80], ['Jhon Durán', 'DEL', 80],
-    ['Sinisterra', 'DEL', 78], ['Cuadrado', 'DEL', 75],
+    ['Camilo Vargas', 'POR', 79], ['Montero', 'POR', 70],
+    ['D. Muñoz', 'DEF', 83], ['Lucumí', 'DEF', 80], ['Santiago Arias', 'DEF', 73, [['LD', 73]]], ['Mojica', 'DEF', 77],
+    ['Yerry Mina', 'DEF', 79], ['Dávinson Sánchez', 'DEF', 80],
+    ['James Rodríguez', 'MED', 84], ['Lerma', 'MED', 81], ['Richard Ríos', 'MED', 82],
+    ['Castaño', 'MED', 77], ['Jhon Arias', 'MED', 83, [['MD', 83], ['ED', 82]]],
+    ['Juan Quintero', 'MED', 81, [['MCO', 81]]], ['Jaminton Campaz', 'MED', 78, [['MCO', 78], ['EI', 77]]],
+    ['Luis Díaz', 'DEL', 87], ['Jhon Córdoba', 'DEL', 82], ['Cucho Hernández', 'DEL', 80, [['DC', 80]]],
   ]),
   squad('ecu2026', 'Ecuador', 2026, '🇪🇨', 'La Tri', '#FFDD00', '#0072CE', [
     ['Galíndez', 'POR', 77], ['Domínguez', 'POR', 73],
@@ -1404,12 +1480,13 @@ export const SQUADS_2026 = [
     ['Estrada', 'DEL', 73],
   ]),
   squad('par2026', 'Paraguay', 2026, '🇵🇾', 'La Albirroja', '#D52B1E', '#0038A8', [
-    ['Coronel', 'POR', 76], ['Servío', 'POR', 71],
-    ['Gustavo Gómez', 'DEF', 78], ['Balbuena', 'DEF', 75], ['Alderete', 'DEF', 77], ['Espinoza', 'DEF', 74],
-    ['Alonso', 'DEF', 73], ['Velázquez', 'DEF', 73],
-    ['Villasanti', 'MED', 79], ['Cubas', 'MED', 77], ['Almirón', 'MED', 78],
-    ['Enciso', 'MED', 79], ['Bobadilla', 'MED', 74],
-    ['Antonio Sanabria', 'DEL', 77], ['Ramón Sosa', 'DEL', 76], ['Bareiro', 'DEL', 73], ['Ovelar', 'DEL', 70],
+    ['Orlando Gill', 'POR', 85], ['Gatito Fernández', 'POR', 74],
+    ['Gustavo Gómez', 'DEF', 81], ['Balbuena', 'DEF', 76], ['Alderete', 'DEF', 80],
+    ['Alonso', 'DEF', 74, [['LD', 74]]], ['Velázquez', 'DEF', 76, [['DFC', 76]]],
+    ['Diego Gómez', 'MED', 80], ['Cubas', 'MED', 81], ['Almirón', 'MED', 81],
+    ['Enciso', 'MED', 82], ['Bobadilla', 'MED', 76], ['Mauricio', 'MED', 77],
+    ['Alejandro Romero Gamarra', 'MED', 77, [['MCO', 77]]],
+    ['Antonio Sanabria', 'DEL', 79], ['Ramón Sosa', 'DEL', 80], ['Gabriel Ávalos', 'DEL', 75, [['DC', 75]]],
   ]),
 
   // ---------- Europa ----------
@@ -1440,13 +1517,13 @@ export const SQUADS_2026 = [
     ['Perišić', 'DEL', 79], ['Kramarić', 'DEL', 80], ['Budimir', 'DEL', 76], ['Pjaca', 'DEL', 73],
   ]),
   squad('bel2026', 'Bélgica', 2026, '🇧🇪', 'Los Diablos Rojos', '#E30613', '#FFE936', [
-    ['Casteels', 'POR', 79], ['Sels', 'POR', 78],
-    ['Castagne', 'DEF', 78], ['Faes', 'DEF', 76], ['Debast', 'DEF', 77], ['Theate', 'DEF', 77],
-    ['De Cuyper', 'DEF', 76], ['Meunier', 'DEF', 75],
-    ['De Bruyne', 'MED', 88], ['Tielemans', 'MED', 81], ['Onana', 'MED', 80],
-    ['Vermeeren', 'MED', 77], ['Mangala', 'MED', 76],
-    ['Lukaku', 'DEL', 83], ['Doku', 'DEL', 83], ['Trossard', 'DEL', 81], ['Openda', 'DEL', 81],
-    ['Bakayoko', 'DEL', 76],
+    ['Courtois', 'POR', 88], ['Senne Lammens', 'POR', 73],
+    ['Castagne', 'DEF', 78], ['De Winter', 'DEF', 78, [['DFC', 78]]], ['Debast', 'DEF', 80], ['Theate', 'DEF', 80],
+    ['De Cuyper', 'DEF', 82], ['Meunier', 'DEF', 73],
+    ['De Bruyne', 'MED', 87], ['Tielemans', 'MED', 83], ['Onana', 'MED', 82],
+    ['Vanaken', 'MED', 78, [['MCO', 78]]], ['Saelemaekers', 'MED', 80, [['MD', 80], ['ED', 79]]],
+    ['Lukaku', 'DEL', 82], ['Doku', 'DEL', 87], ['Trossard', 'DEL', 80],
+    ['De Ketelaere', 'DEL', 84, [['MCO', 84], ['DC', 83]]], ['Lukebakio', 'DEL', 79, [['ED', 79]]],
   ]),
   squad('cze2026', 'Chequia', 2026, '🇨🇿', 'Národní tým', '#D7141A', '#FFFFFF', [
     ['Staněk', 'POR', 76], ['Jaroš', 'POR', 73],
@@ -1457,13 +1534,14 @@ export const SQUADS_2026 = [
     ['Schick', 'DEL', 82], ['Hložek', 'DEL', 78], ['Kušej', 'DEL', 73], ['Chytil', 'DEL', 73],
   ]),
   squad('sui2026', 'Suiza', 2026, '🇨🇭', 'La Nati', '#D52B1E', '#FFFFFF', [
-    ['Sommer', 'POR', 82], ['Kobel', 'POR', 81],
-    ['Widmer', 'DEF', 75], ['Akanji', 'DEF', 84], ['Schär', 'DEF', 80], ['Rodríguez', 'DEF', 76],
-    ['Elvedi', 'DEF', 77], ['Aebischer', 'DEF', 76],
-    ['Xhaka', 'MED', 83], ['Freuler', 'MED', 78], ['Rieder', 'MED', 77],
-    ['Vargas', 'MED', 77], ['Sow', 'MED', 75],
-    ['Embolo', 'DEL', 80], ['Ndoye', 'DEL', 78], ['Shaqiri', 'DEL', 78], ['Amdouni', 'DEL', 76],
-    ['Okafor', 'DEL', 77],
+    ['Kobel', 'POR', 87],
+    ['Widmer', 'DEF', 75], ['Akanji', 'DEF', 84], ['Miro Muheim', 'DEF', 76, [['LI', 76]]], ['Rodríguez', 'DEF', 77],
+    ['Elvedi', 'DEF', 79], ['Aebischer', 'DEF', 79],
+    ['Xhaka', 'MED', 85], ['Freuler', 'MED', 83], ['Rieder', 'MED', 80],
+    ['Vargas', 'MED', 81], ['Sow', 'MED', 76], ['Johan Manzambi', 'MED', 85, [['MCO', 85]]],
+    ['Denis Zakaria', 'MED', 81, [['MCD', 81]]],
+    ['Embolo', 'DEL', 82], ['Ndoye', 'DEL', 84],
+    ['Amdouni', 'DEL', 77, [['EI', 77], ['ED', 77]]], ['Okafor', 'DEL', 74, [['DC', 74]]],
   ]),
   squad('tur2026', 'Türkiye', 2026, '🇹🇷', 'Ay-Yıldızlılar', '#E30A17', '#FFFFFF', [
     ['Çakır', 'POR', 80], ['Bayındır', 'POR', 76],
@@ -1490,12 +1568,13 @@ export const SQUADS_2026 = [
     ['Isak', 'DEL', 87], ['Gyökeres', 'DEL', 86], ['Elanga', 'DEL', 79], ['Bernhardsson', 'DEL', 73],
   ]),
   squad('nor2026', 'Noruega', 2026, '🇳🇴', 'Løvene', '#BA0C2F', '#00205B', [
-    ['Nyland', 'POR', 76], ['Dyngeland', 'POR', 71],
-    ['Ryerson', 'DEF', 75], ['Ajer', 'DEF', 78], ['Østigård', 'DEF', 77], ['Bjørkan', 'DEF', 73],
-    ['Møller Wolfe', 'DEF', 72], ['Heggem', 'DEF', 73],
-    ['Ødegaard', 'MED', 87], ['Berge', 'MED', 78], ['Aursnes', 'MED', 78],
-    ['Thorsby', 'MED', 74], ['Bobb', 'MED', 76],
-    ['Haaland', 'DEL', 93], ['Sørloth', 'DEL', 81], ['Nusa', 'DEL', 79], ['Strand Larsen', 'DEL', 77],
+    ['Nyland', 'POR', 77],
+    ['Ryerson', 'DEF', 81], ['Ajer', 'DEF', 79], ['Østigård', 'DEF', 80], ['Bjørkan', 'DEF', 76],
+    ['Møller Wolfe', 'DEF', 77], ['Heggem', 'DEF', 74],
+    ['Ødegaard', 'MED', 89], ['Berge', 'MED', 82], ['Aursnes', 'MED', 81],
+    ['Thorsby', 'MED', 77], ['Bobb', 'MED', 79],
+    ['Haaland', 'DEL', 94], ['Sørloth', 'DEL', 84], ['Nusa', 'DEL', 84], ['Strand Larsen', 'DEL', 78],
+    ['Andreas Schjelderup', 'DEL', 85, [['EI', 85], ['ED', 84]]],
   ]),
   squad('sco2026', 'Escocia', 2026, '🏴', 'The Tartan Army', '#0065BF', '#FFFFFF', [
     ['Gunn', 'POR', 75], ['Clark', 'POR', 71],
@@ -1516,12 +1595,13 @@ export const SQUADS_2026 = [
 
   // ---------- África ----------
   squad('mar2026', 'Marruecos', 2026, '🇲🇦', 'Los Leones del Atlas', '#C1272D', '#006233', [
-    ['Bono', 'POR', 82], ['Munir', 'POR', 75],
-    ['Hakimi', 'DEF', 86], ['Aguerd', 'DEF', 79], ['Mazraoui', 'DEF', 80], ['Saïss', 'DEF', 76],
-    ['El Yamiq', 'DEF', 74], ['Attiat-Allah', 'DEF', 73],
-    ['Amrabat', 'MED', 79], ['Ounahi', 'MED', 78], ['El Khannouss', 'MED', 79],
-    ['Amallah', 'MED', 74], ['Ezzalzouli', 'MED', 77],
-    ['Brahim Díaz', 'DEL', 82], ['En-Nesyri', 'DEL', 80], ['Ziyech', 'DEL', 80], ['Igamane', 'DEL', 75],
+    ['Bono', 'POR', 87], ['Munir', 'POR', 72],
+    ['Hakimi', 'DEF', 88], ['Chadi Riad', 'DEF', 75, [['DFC', 75]]], ['Mazraoui', 'DEF', 83],
+    ['Zakaria El Ouahdi', 'DEF', 76, [['LD', 76]]], ['Issa Diop', 'DEF', 75, [['DFC', 75]]],
+    ['Amrabat', 'MED', 78], ['Ounahi', 'MED', 77], ['El Khannouss', 'MED', 82],
+    ['Ismael Saibari', 'MED', 85], ['Neil El Aynaoui', 'MED', 83], ['Ayyoub Bouaddi', 'MED', 79],
+    ['Chemsdine Talbi', 'MED', 78],
+    ['Brahim Díaz', 'DEL', 88], ['Soufiane Rahimi', 'DEL', 82], ['Ayoub El Kaabi', 'DEL', 80, [['DC', 80]]],
   ]),
   squad('sen2026', 'Senegal', 2026, '🇸🇳', 'Los Leones de Teranga', '#00853F', '#FDEF42', [
     ['Édouard Mendy', 'POR', 80], ['Seny Dieng', 'POR', 74],
@@ -1533,12 +1613,12 @@ export const SQUADS_2026 = [
     ['Boulaye Dia', 'DEL', 78], ['Habib Diallo', 'DEL', 74],
   ]),
   squad('egy2026', 'Egipto', 2026, '🇪🇬', 'Los Faraones', '#CE1126', '#FFFFFF', [
-    ['El Shenawy', 'POR', 78], ['Abou Gabal', 'POR', 73],
-    ['Hegazi', 'DEF', 75], ['Abdelmonem', 'DEF', 75], ['Mohamed Hany', 'DEF', 73], ['Fattouh', 'DEF', 73],
-    ['Rami Rabia', 'DEF', 72], ['Ahmed Hany', 'DEF', 71],
-    ['Elneny', 'MED', 76], ['Emam Ashour', 'MED', 78], ['Zizo', 'MED', 77],
-    ['Hamdy Fathy', 'MED', 74], ['Trezeguet', 'MED', 77],
-    ['Mohamed Salah', 'DEL', 90], ['Marmoush', 'DEL', 83], ['Mostafa Mohamed', 'DEL', 76], ['Saleh Gomaa', 'DEL', 72],
+    ['El Shenawy', 'POR', 80], ['Mostafa Shoubir', 'POR', 75],
+    ['Yasser Ibrahim', 'DEF', 75, [['DFC', 75]]], ['Abdelmonem', 'DEF', 77], ['Mohamed Hany', 'DEF', 80], ['Fattouh', 'DEF', 74],
+    ['Rami Rabia', 'DEF', 74], ['Hossam Abdelmaguid', 'DEF', 74, [['DFC', 74]]],
+    ['Marwan Attia', 'MED', 79], ['Emam Ashour', 'MED', 80], ['Zizo', 'MED', 80],
+    ['Hamdy Fathy', 'MED', 77], ['Trezeguet', 'MED', 79], ['Mohanad Lashin', 'MED', 74],
+    ['Mohamed Salah', 'DEL', 88], ['Marmoush', 'DEL', 84], ['Ibrahim Adel', 'DEL', 79, [['EI', 79]]],
   ]),
   squad('alg2026', 'Argelia', 2026, '🇩🇿', 'Los Fennecs', '#007229', '#FFFFFF', [
     ['Mandrea', 'POR', 73], ['Oukidja', 'POR', 73],
@@ -1677,31 +1757,34 @@ export const SQUADS_2026 = [
 
   // ---------- Concacaf ----------
   squad('usa2026', 'Estados Unidos', 2026, '🇺🇸', 'The Stars and Stripes', '#0A3161', '#B31942', [
-    ['Matt Turner', 'POR', 77], ['Patrick Schulte', 'POR', 73],
-    ['Sergiño Dest', 'DEF', 79], ['Chris Richards', 'DEF', 78], ['Carter-Vickers', 'DEF', 77], ['Antonee Robinson', 'DEF', 80],
-    ['Tim Ream', 'DEF', 73], ['Miles Robinson', 'DEF', 74], ['Scally', 'DEF', 74],
-    ['Tyler Adams', 'MED', 79], ['Weston McKennie', 'MED', 81], ['Yunus Musah', 'MED', 79],
-    ['Johnny Cardoso', 'MED', 77], ['Gio Reyna', 'MED', 78],
-    ['Pulisic', 'DEL', 85], ['Balogun', 'DEL', 80], ['Tim Weah', 'DEL', 78], ['Aaronson', 'DEL', 77],
-    ['Ricardo Pepi', 'DEL', 77],
+    ['Matt Turner', 'POR', 77],
+    ['Sergiño Dest', 'DEF', 81], ['Chris Richards', 'DEF', 82], ['Auston Trusty', 'DEF', 76, [['DFC', 76]]],
+    ['Antonee Robinson', 'DEF', 82],
+    ['Tim Ream', 'DEF', 72], ['Miles Robinson', 'DEF', 76], ['Scally', 'DEF', 78],
+    ['Alex Freeman', 'DEF', 76, [['LD', 76]]],
+    ['Tyler Adams', 'MED', 83], ['Weston McKennie', 'MED', 82],
+    ['Malik Tillman', 'MED', 82, [['MCO', 82]]], ['Gio Reyna', 'MED', 81, [['MD', 81], ['MC', 81]]],
+    ['Pulisic', 'DEL', 84], ['Balogun', 'DEL', 83], ['Tim Weah', 'DEL', 80], ['Aaronson', 'DEL', 75],
+    ['Ricardo Pepi', 'DEL', 77], ['Haji Wright', 'DEL', 78, [['DC', 78]]],
   ]),
   squad('mex2026', 'México', 2026, '🇲🇽', 'El Tri', '#006847', '#FFFFFF', [
-    ['Luis Malagón', 'POR', 77], ['Rangel', 'POR', 73],
-    ['Jorge Sánchez', 'DEF', 74], ['César Montes', 'DEF', 78], ['Johan Vásquez', 'DEF', 78], ['Gallardo', 'DEF', 75],
-    ['Israel Reyes', 'DEF', 74], ['Kevin Álvarez', 'DEF', 73], ['Huescas', 'DEF', 73],
-    ['Edson Álvarez', 'MED', 81], ['Luis Romo', 'MED', 76], ['Luis Chávez', 'MED', 76],
-    ['Orbelín Pineda', 'MED', 77], ['Erik Lira', 'MED', 74],
-    ['Santiago Giménez', 'DEL', 81], ['Raúl Jiménez', 'DEL', 78], ['Hirving Lozano', 'DEL', 80],
-    ['Alexis Vega', 'DEL', 77], ['Julián Quiñones', 'DEL', 76],
+    ['Guillermo Ochoa', 'POR', 72], ['Rangel', 'POR', 85],
+    ['Jorge Sánchez', 'DEF', 76], ['César Montes', 'DEF', 81], ['Johan Vásquez', 'DEF', 81], ['Gallardo', 'DEF', 77],
+    ['Israel Reyes', 'DEF', 76],
+    ['Edson Álvarez', 'MED', 83], ['Luis Romo', 'MED', 77], ['Luis Chávez', 'MED', 80],
+    ['Orbelín Pineda', 'MED', 78], ['Erik Lira', 'MED', 74], ['Álvaro Fidalgo', 'MED', 80],
+    ['Gilberto Mora', 'MED', 82, [['MCO', 82]]],
+    ['Santiago Giménez', 'DEL', 82], ['Raúl Jiménez', 'DEL', 83], ['Roberto Alvarado', 'DEL', 84, [['ED', 84]]],
+    ['Alexis Vega', 'DEL', 78], ['Julián Quiñones', 'DEL', 85],
   ]),
   squad('can2026', 'Canadá', 2026, '🇨🇦', 'Les Rouges', '#FF0000', '#FFFFFF', [
-    ['Crépeau', 'POR', 74], ['Dayne St. Clair', 'POR', 75],
-    ['Alphonso Davies', 'DEF', 85], ['Bombito', 'DEF', 77], ['Cornelius', 'DEF', 74], ['Alistair Johnston', 'DEF', 78],
-    ['Kamal Miller', 'DEF', 73], ['Richie Laryea', 'DEF', 73],
-    ['Stephen Eustáquio', 'MED', 78], ['Ismaël Koné', 'MED', 76], ['Jonathan Osorio', 'MED', 73],
-    ['Choinière', 'MED', 72], ['Liam Fraser', 'MED', 71],
-    ['Jonathan David', 'DEL', 83], ['Cyle Larin', 'DEL', 76], ['Tajon Buchanan', 'DEL', 78],
-    ['Shaffelburg', 'DEL', 74], ['Promise David', 'DEL', 74],
+    ['Crépeau', 'POR', 77], ['Dayne St. Clair', 'POR', 79],
+    ['Alphonso Davies', 'DEF', 86], ['Bombito', 'DEF', 80], ['Cornelius', 'DEF', 79], ['Alistair Johnston', 'DEF', 81],
+    ['Richie Laryea', 'DEF', 76, [['DFC', 76]]],
+    ['Stephen Eustáquio', 'MED', 81], ['Ismaël Koné', 'MED', 79], ['Jonathan Osorio', 'MED', 75],
+    ['Choinière', 'MED', 74], ['Nathan Saliba', 'MED', 77],
+    ['Jonathan David', 'DEL', 84], ['Cyle Larin', 'DEL', 78], ['Tajon Buchanan', 'DEL', 80],
+    ['Shaffelburg', 'DEL', 78], ['Promise David', 'DEL', 75], ['Ali Ahmed', 'DEL', 79, [['ED', 79], ['EI', 79]]],
   ]),
   squad('pan2026', 'Panamá', 2026, '🇵🇦', 'La Marea Roja', '#DA121A', '#005293', [
     ['Orlando Mosquera', 'POR', 73], ['César Samudio', 'POR', 70],
@@ -1739,6 +1822,236 @@ export const SQUADS_2026 = [
   ]),
 ];
 
+const SQUADS_2026_OCTAVOS_KEYS = new Set([
+  'arg2026', 'egy2026', 'bra2026', 'nor2026',
+  'mex2026', 'eng2026', 'por2026', 'esp2026',
+  'usa2026', 'bel2026', 'can2026', 'mar2026',
+  'par2026', 'fra2026', 'sui2026', 'col2026',
+]);
+
+export const SQUADS_2026_OCTAVOS = SQUADS_2026
+  .filter(s => SQUADS_2026_OCTAVOS_KEYS.has(s.key));
+
+export const SQUADS_HISTORICAS_AMPLIADAS = [
+  ...SQUADS,
+  ...SQUADS_2026_OCTAVOS,
+];
+
+// Resultado real de cada plantel en su Mundial. Es la única fuente usada por
+// la pantalla de Selecciones Mundiales; no se infiere desde nombres o años.
+export const RESULTADO_MUNDIAL = {
+  // 1950
+  chi1950: 'Fase de grupos',
+  uru1950: 'Campeón',
+  bra1950: 'Subcampeón',
+  swe1950: 'Tercer lugar',
+  esp1950: 'Cuarto lugar',
+
+  // 1954
+  hun1954: 'Subcampeón',
+  ger1954: 'Campeón',
+  uru1954: 'Cuarto lugar',
+  aut1954: 'Tercer lugar',
+  sui1954: 'Cuartos de final',
+  eng1954: 'Cuartos de final',
+  yug1954: 'Cuartos de final',
+  bra1954: 'Cuartos de final',
+
+  // 1958
+  bra1958: 'Campeón',
+  fra1958: 'Tercer lugar',
+  swe1958: 'Subcampeón',
+  ger1958: 'Cuarto lugar',
+  urs1958: 'Cuartos de final',
+  nir1958: 'Cuartos de final',
+  wal1958: 'Cuartos de final',
+  yug1958: 'Cuartos de final',
+
+  // 1962
+  chi1962: 'Tercer lugar',
+  bra1962: 'Campeón',
+  urs1962: 'Cuartos de final',
+  yug1962: 'Cuarto lugar',
+  tch1962: 'Subcampeón',
+  hun1962: 'Cuartos de final',
+  eng1962: 'Cuartos de final',
+  ger1962: 'Cuartos de final',
+
+  // 1966
+  eng1966: 'Campeón',
+  por1966: 'Tercer lugar',
+  chi1966: 'Fase de grupos',
+  ger1966: 'Subcampeón',
+  urs1966: 'Cuarto lugar',
+  hun1966: 'Cuartos de final',
+  prk1966: 'Cuartos de final',
+  uru1966: 'Cuartos de final',
+  arg1966: 'Cuartos de final',
+
+  // 1970
+  bra1970: 'Campeón',
+  ita1970: 'Subcampeón',
+  ger1970: 'Tercer lugar',
+  uru1970: 'Cuarto lugar',
+  mex1970: 'Cuartos de final',
+  urs1970: 'Cuartos de final',
+  per1970: 'Cuartos de final',
+  eng1970: 'Cuartos de final',
+
+  // 1974
+  ned1974: 'Subcampeón',
+  ger1974: 'Campeón',
+  pol1974: 'Tercer lugar',
+  chi1974: 'Fase de grupos',
+  bra1974: 'Cuarto lugar',
+  swe1974: 'Segunda fase (Top 8)',
+  arg1974: 'Segunda fase (Top 8)',
+  gdr1974: 'Segunda fase (Top 8)',
+  yug1974: 'Segunda fase (Top 8)',
+
+  // 1978
+  arg1978: 'Campeón',
+  ned1978: 'Subcampeón',
+  bra1978: 'Tercer lugar',
+  ita1978: 'Cuarto lugar',
+  pol1978: 'Segunda fase (Top 8)',
+  ger1978: 'Segunda fase (Top 8)',
+  aut1978: 'Segunda fase (Top 8)',
+  per1978: 'Segunda fase (Top 8)',
+
+  // 1982
+  bra1982: 'Segunda fase (Top 12)',
+  ita1982: 'Campeón',
+  chi1982: 'Fase de grupos',
+  ger1982: 'Subcampeón',
+  pol1982: 'Tercer lugar',
+  fra1982: 'Cuarto lugar',
+  eng1982: 'Segunda fase (Top 12)',
+  urs1982: 'Segunda fase (Top 12)',
+  aut1982: 'Segunda fase (Top 12)',
+
+  // 1986
+  arg1986: 'Campeón',
+  fra1986: 'Tercer lugar',
+  ger1986: 'Subcampeón',
+  eng1986: 'Cuartos de final',
+  bra1986: 'Cuartos de final',
+  mex1986: 'Cuartos de final',
+  bel1986: 'Cuarto lugar',
+  esp1986: 'Cuartos de final',
+
+  // 1990
+  ger1990: 'Campeón',
+  cam1990: 'Cuartos de final',
+  eng1990: 'Cuarto lugar',
+  arg1990: 'Subcampeón',
+  ita1990: 'Tercer lugar',
+  irl1990: 'Cuartos de final',
+  tch1990: 'Cuartos de final',
+  yug1990: 'Cuartos de final',
+
+  // 1994
+  bra1994: 'Campeón',
+  ita1994: 'Subcampeón',
+  rom1994: 'Cuartos de final',
+  bul1994: 'Cuarto lugar',
+  swe1994: 'Tercer lugar',
+  ger1994: 'Cuartos de final',
+  esp1994: 'Cuartos de final',
+  ned1994: 'Cuartos de final',
+
+  // 1998
+  fra1998: 'Campeón',
+  bra1998: 'Subcampeón',
+  ned1998: 'Cuarto lugar',
+  chi1998: 'Octavos de final',
+  cro1998: 'Tercer lugar',
+  ita1998: 'Cuartos de final',
+  arg1998: 'Cuartos de final',
+  ger1998: 'Cuartos de final',
+  den1998: 'Cuartos de final',
+
+  // 2002
+  bra2002: 'Campeón',
+  ger2002: 'Subcampeón',
+  tur2002: 'Tercer lugar',
+  kor2002: 'Cuarto lugar',
+  esp2002: 'Cuartos de final',
+  eng2002: 'Cuartos de final',
+  usa2002: 'Cuartos de final',
+  sen2002: 'Cuartos de final',
+
+  // 2006
+  ita2006: 'Campeón',
+  fra2006: 'Subcampeón',
+  ger2006: 'Tercer lugar',
+  por2006: 'Cuarto lugar',
+  bra2006: 'Cuartos de final',
+  arg2006: 'Cuartos de final',
+  eng2006: 'Cuartos de final',
+  ukr2006: 'Cuartos de final',
+
+  // 2010
+  esp2010: 'Campeón',
+  ned2010: 'Subcampeón',
+  chi2010: 'Octavos de final',
+  uru2010: 'Cuarto lugar',
+  ger2010: 'Tercer lugar',
+  bra2010: 'Cuartos de final',
+  arg2010: 'Cuartos de final',
+  gha2010: 'Cuartos de final',
+  par2010: 'Cuartos de final',
+
+  // 2014
+  ger2014: 'Campeón',
+  arg2014: 'Subcampeón',
+  chi2014: 'Octavos de final',
+  col2014: 'Cuartos de final',
+  bra2014: 'Cuarto lugar',
+  ned2014: 'Tercer lugar',
+  fra2014: 'Cuartos de final',
+  bel2014: 'Cuartos de final',
+  crc2014: 'Cuartos de final',
+
+  // 2018
+  fra2018: 'Campeón',
+  cro2018: 'Subcampeón',
+  bel2018: 'Tercer lugar',
+  eng2018: 'Cuarto lugar',
+  bra2018: 'Cuartos de final',
+  uru2018: 'Cuartos de final',
+  swe2018: 'Cuartos de final',
+  rus2018: 'Cuartos de final',
+
+  // 2022
+  arg2022: 'Campeón',
+  fra2022: 'Subcampeón',
+  mar2022: 'Cuarto lugar',
+  bra2022: 'Cuartos de final',
+  ned2022: 'Cuartos de final',
+  eng2022: 'Cuartos de final',
+  por2022: 'Cuartos de final',
+  cro2022: 'Tercer lugar',
+
+  // 2026
+  arg2026: 'Subcampeón',
+  egy2026: 'Octavos de final',
+  bra2026: 'Octavos de final',
+  nor2026: 'Cuartos de final',
+  mex2026: 'Octavos de final',
+  eng2026: 'Tercer lugar',
+  por2026: 'Octavos de final',
+  esp2026: 'Campeón',
+  usa2026: 'Octavos de final',
+  bel2026: 'Cuartos de final',
+  can2026: 'Octavos de final',
+  mar2026: 'Cuartos de final',
+  par2026: 'Octavos de final',
+  fra2026: 'Cuarto lugar',
+  sui2026: 'Cuartos de final',
+  col2026: 'Octavos de final',
+};
+
 // todos los planteles (históricos + Mundial 2026) para construir los índices globales
 const TODOS_LOS_PLANTELES = [...SQUADS, ...SQUADS_2026];
 export const SQUADS_BY_KEY = Object.fromEntries(TODOS_LOS_PLANTELES.map(s => [s.key, s]));
@@ -1747,10 +2060,18 @@ export const SQUADS_BY_KEY = Object.fromEntries(TODOS_LOS_PLANTELES.map(s => [s.
 export const JUGADORES_BY_ID = {};
 for (const s of TODOS_LOS_PLANTELES) for (const j of s.jugadores) JUGADORES_BY_ID[j.id] = { ...j, squad: s };
 
-// selecciones disponibles según el modo: "mundial2026" usa SOLO las del Mundial 2026;
-// el resto de modos (clásico/almanaque/penales) usan SOLO las históricas
-export function squadsParaModo(modo) {
-  return modo === 'mundial2026' ? SQUADS_2026 : SQUADS;
+// El modo principal (id interno "almanaque") suma los 16 octavofinalistas de 2026.
+// Solo Penales conserva exclusivamente los planteles históricos. La rama
+// "mundial2026" queda únicamente para compatibilidad con salas antiguas.
+export function squadsParaModo(modo, enabledKeys = null) {
+  const base = modo === 'almanaque'
+    ? SQUADS_HISTORICAS_AMPLIADAS
+    : modo === 'mundial2026'
+      ? SQUADS_2026
+      : SQUADS;
+  if (!Array.isArray(enabledKeys)) return base;
+  const enabled = new Set(enabledKeys);
+  return base.filter(s => enabled.has(s.key));
 }
 
 export const FORMACIONES = {

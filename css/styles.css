@@ -99,6 +99,15 @@ input:focus, select:focus { outline: 3px solid var(--dorado); }
   letter-spacing: 0.02em;
   line-height: 1;
 }
+@media (max-width: 420px) {
+  .titulo {
+    /* "MUNDIALITO" debe caber completo incluso en 320 px. */
+    font-size: clamp(2.2rem, 11vw, 3rem);
+    text-shadow:
+      3px 3px 0 var(--rojo),
+      6px 6px 0 rgba(0, 0, 0, 0.35);
+  }
+}
 .subtitulo {
   margin-top: 14px;
   letter-spacing: 0.35em;
@@ -156,6 +165,488 @@ input:focus, select:focus { outline: 3px solid var(--dorado); }
 }
 
 .home-pie { text-align: center; margin-top: 36px; font-size: 0.8rem; opacity: 0.65; letter-spacing: 0.08em; }
+
+/* ---------- selecciones mundiales ---------- */
+
+.overlay-selecciones-mundiales {
+  position: fixed; inset: 0; z-index: 70;
+  display: grid; place-items: center;
+  padding: 22px;
+  background: rgba(5, 22, 14, 0.9);
+  backdrop-filter: blur(2px);
+}
+
+body:has(.overlay-selecciones-mundiales) { overflow: hidden; }
+
+.overlay-selecciones-mundiales > [hidden] { display: none !important; }
+
+.panel-selecciones-mundiales,
+.panel-detalle-seleccion {
+  display: flex;
+  flex-direction: column;
+  width: min(1040px, 100%);
+  max-height: calc(100vh - 44px);
+  max-height: calc(100dvh - 44px);
+  overflow: hidden;
+  background: var(--crema);
+  color: var(--tinta);
+  border: 3px solid var(--tinta);
+  box-shadow: 0 0 0 3px var(--dorado), 10px 10px 0 rgba(0,0,0,0.5);
+  animation: aparecer 0.2s ease both;
+}
+
+.selecciones-mundiales-cabecera,
+.detalle-seleccion-cabecera {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 15px 20px;
+  background: var(--tinta);
+  color: var(--crema);
+  border-bottom: 3px solid var(--dorado);
+}
+
+.selecciones-mundiales-cabecera h2,
+.detalle-seleccion-cabecera h2 {
+  color: var(--dorado);
+  font-size: clamp(1.15rem, 3.5vw, 1.7rem);
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+}
+
+.selecciones-mundiales-cabecera .btn,
+.detalle-seleccion-cabecera .btn {
+  flex: none;
+  padding: 8px 14px;
+}
+
+.selecciones-conteo-global {
+  margin-top: 4px;
+  color: var(--crema);
+  font-family: var(--fuente-numeros);
+  font-size: 0.9rem;
+  letter-spacing: 0.06em;
+}
+
+.selecciones-aviso-minimo {
+  margin-top: 5px;
+  color: #ffd36a;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.selecciones-mundiales-contenido,
+.detalle-seleccion-contenido {
+  min-height: 0;
+  padding: 18px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* Acordeones de cada Mundial */
+.selecciones-mundiales-contenido {
+  display: grid;
+  gap: 11px;
+}
+
+.mundial-acordeon {
+  min-width: 0;
+  background: #fff;
+  border: 2px solid var(--tinta);
+  box-shadow: 3px 3px 0 rgba(0,0,0,0.18);
+}
+
+.mundial-acordeon-cabecera {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  background: linear-gradient(90deg, #fff 0%, var(--crema-sombra) 100%);
+}
+
+.mundial-acordeon-trigger {
+  min-width: 0;
+  padding: 12px 14px;
+  background: transparent;
+  color: var(--tinta);
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.mundial-acordeon-trigger:hover { background: rgba(216, 166, 42, 0.14); }
+.mundial-acordeon-trigger:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 3px solid var(--dorado);
+  outline-offset: -3px;
+}
+
+.mundial-resumen-linea {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.mundial-anio {
+  flex: none;
+  color: var(--verde-oscuro);
+  font-family: var(--fuente-display);
+  font-size: 1.28rem;
+}
+
+.mundial-conteo {
+  font-family: var(--fuente-numeros);
+  font-size: 0.88rem;
+  font-weight: 700;
+}
+
+.mundial-estado {
+  flex: none;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.09em;
+}
+.mundial-estado-on { color: var(--verde-oscuro); }
+.mundial-estado-off { color: #6b665c; }
+.mundial-estado-parcial { color: #8a5b00; }
+
+.mundial-chevron {
+  margin-left: auto;
+  color: var(--rojo);
+  font-size: 0.72rem;
+  transition: transform 0.16s ease;
+}
+.mundial-acordeon-trigger[aria-expanded="true"] .mundial-chevron { transform: rotate(180deg); }
+
+.mundial-preview {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: rgba(27,26,22,0.62);
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mundial-acordeon-panel {
+  padding: 12px;
+  background: var(--crema);
+  border-top: 2px solid var(--tinta);
+}
+
+.selecciones-mundial-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+/* Tarjeta individual: el botón abre el detalle y el switch es un control separado. */
+.seleccion-mundial {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-width: 0;
+  background: #fff;
+  border: 1px solid rgba(27,26,22,0.42);
+  box-shadow: 2px 2px 0 rgba(0,0,0,0.12);
+  transition: opacity 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.seleccion-mundial.seleccion-off {
+  background: #e5dfd2;
+  border-style: dashed;
+}
+.seleccion-mundial.seleccion-off .seleccion-detalle-trigger { opacity: 0.56; }
+
+.seleccion-detalle-trigger {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  min-height: 58px;
+  padding: 8px 6px 8px 10px;
+  background: transparent;
+  color: var(--tinta);
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+.seleccion-detalle-trigger:hover { background: rgba(216,166,42,0.14); }
+.seleccion-detalle-trigger:focus-visible {
+  outline: 3px solid var(--dorado);
+  outline-offset: -3px;
+}
+
+.seleccion-identidad {
+  display: flex;
+  align-items: flex-start;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.seleccion-identidad strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Todas las banderas comparten una caja visual y conservan su proporción. */
+.flag-slot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 20px;
+  overflow: hidden;
+  line-height: 0;
+}
+.flag-slot.flag-slot-grande {
+  flex-basis: 44px;
+  width: 44px;
+  height: 30px;
+}
+.flag-slot .bandera {
+  display: block;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  vertical-align: 0;
+}
+
+/* Switches nativos accesibles con aspecto retro. */
+.interruptor {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: 42px 48px;
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 0 10px;
+  cursor: pointer;
+  user-select: none;
+}
+.interruptor input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  border: 0;
+  box-shadow: none;
+  white-space: nowrap;
+}
+.interruptor-pista {
+  position: relative;
+  display: block;
+  width: 42px;
+  height: 24px;
+  background: #aaa397;
+  border: 2px solid var(--tinta);
+  box-shadow: 2px 2px 0 rgba(0,0,0,0.22);
+  transition: background 0.15s;
+}
+.interruptor-pista > span {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  background: var(--crema);
+  border: 1px solid var(--tinta);
+  transition: transform 0.15s;
+}
+.interruptor input:checked + .interruptor-pista { background: var(--verde-claro); }
+.interruptor input:checked + .interruptor-pista > span { transform: translateX(18px); }
+.interruptor input:indeterminate + .interruptor-pista { background: var(--dorado); }
+.interruptor input:indeterminate + .interruptor-pista > span { transform: translateX(9px); }
+.interruptor input:focus-visible + .interruptor-pista {
+  outline: 3px solid var(--dorado);
+  outline-offset: 2px;
+}
+.interruptor-estado {
+  font-family: var(--fuente-numeros);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+.interruptor-seleccion { grid-template-columns: 42px 25px; padding-left: 6px; }
+
+/* Resultado real de la selección en ese Mundial. */
+.resultado-badge {
+  display: inline-block;
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 1px solid currentColor;
+  font-size: 0.58rem;
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+.resultado-campeon { color: #765300; background: #fff0a8; }
+.resultado-subcampeon { color: #555; background: #ececec; }
+.resultado-tercero { color: #7a411a; background: #f1d0ad; }
+.resultado-cuarto { color: var(--rojo); }
+.resultado-eliminatoria { color: var(--verde-oscuro); }
+.resultado-fase { color: #625d53; }
+
+/* Ficha del plantel */
+.panel-detalle-seleccion { width: min(900px, 100%); }
+
+.detalle-seleccion-cabecera { justify-content: flex-start; }
+.detalle-seleccion-identidad {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.detalle-seleccion-identidad > div { min-width: 0; }
+.detalle-seleccion-identidad h2 { margin-bottom: 5px; }
+
+.detalle-estadisticas {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 190px));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+.detalle-estadistica {
+  display: flex;
+  flex-direction: column;
+  padding: 11px 13px;
+  background: var(--tinta);
+  color: var(--crema);
+  border-left: 5px solid var(--dorado);
+}
+.detalle-estadistica span {
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+.detalle-estadistica strong {
+  color: var(--dorado);
+  font-family: var(--fuente-display);
+  font-size: 1.55rem;
+}
+
+.plantel-grupos {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.plantel-grupo {
+  min-width: 0;
+  border: 2px solid var(--tinta);
+  background: #fff;
+  box-shadow: 3px 3px 0 rgba(0,0,0,0.14);
+}
+.plantel-grupo h3 {
+  padding: 7px 10px;
+  background: var(--verde-oscuro);
+  color: var(--crema);
+  font-size: 0.82rem;
+  letter-spacing: 0.1em;
+}
+.plantel-jugador {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 44px 34px;
+  align-items: center;
+  gap: 8px;
+  min-height: 35px;
+  padding: 6px 9px;
+  border-top: 1px solid rgba(27,26,22,0.14);
+}
+.plantel-jugador:first-child { border-top: 0; }
+.plantel-jugador-nombre {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.plantel-jugador-pos {
+  color: rgba(27,26,22,0.65);
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-align: center;
+}
+.plantel-jugador-rating {
+  color: var(--rojo);
+  font-family: var(--fuente-numeros);
+  font-size: 1.12rem;
+  text-align: right;
+}
+
+@media (max-width: 700px) {
+  .overlay-selecciones-mundiales { padding: 8px; }
+  .panel-selecciones-mundiales,
+  .panel-detalle-seleccion {
+    width: 100%;
+    max-height: calc(100vh - 16px);
+    max-height: calc(100dvh - 16px);
+    box-shadow: 0 0 0 2px var(--dorado), 5px 5px 0 rgba(0,0,0,0.45);
+  }
+  .selecciones-mundiales-cabecera,
+  .detalle-seleccion-cabecera {
+    align-items: flex-start;
+    gap: 9px;
+    padding: 11px;
+  }
+  .selecciones-mundiales-cabecera .btn,
+  .detalle-seleccion-cabecera .btn {
+    padding: 7px 9px;
+    font-size: 0.78rem;
+  }
+  .selecciones-conteo-global { font-size: 0.8rem; }
+  .selecciones-aviso-minimo { max-width: 245px; font-size: 0.74rem; }
+  .selecciones-mundiales-contenido,
+  .detalle-seleccion-contenido { padding: 10px; }
+  .selecciones-mundial-grid,
+  .plantel-grupos { grid-template-columns: minmax(0, 1fr); }
+  .mundial-acordeon-cabecera { grid-template-columns: minmax(0, 1fr) 98px; }
+  .mundial-acordeon-trigger { padding: 10px; }
+  .mundial-resumen-linea { gap: 7px; }
+  .mundial-conteo { font-size: 0.78rem; }
+  .mundial-preview { font-size: 0.72rem; }
+  .interruptor { grid-template-columns: 38px 43px; gap: 5px; padding: 0 4px; }
+  .interruptor-pista { width: 38px; }
+  .interruptor input:checked + .interruptor-pista > span { transform: translateX(14px); }
+  .interruptor-seleccion { grid-template-columns: 38px 24px; padding-left: 3px; }
+  .seleccion-detalle-trigger { min-height: 62px; }
+  .detalle-seleccion-cabecera { flex-wrap: wrap; }
+  .detalle-seleccion-identidad { flex: 1 1 230px; }
+  .detalle-estadisticas { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .detalle-estadistica { padding: 9px; }
+  .detalle-estadistica strong { font-size: 1.35rem; }
+}
+
+@media (max-width: 390px) {
+  .mundial-resumen-linea { flex-wrap: wrap; }
+  .mundial-estado { order: 3; }
+  .mundial-chevron { order: 2; }
+  .seleccion-identidad strong { white-space: normal; }
+  .detalle-estadisticas { grid-template-columns: minmax(0, 1fr); }
+  .plantel-jugador-nombre {
+    overflow: visible;
+    line-height: 1.15;
+    text-overflow: clip;
+    white-space: normal;
+  }
+}
 
 /* ---------- CABECERA DE SALA / TICKET ---------- */
 
@@ -364,6 +855,61 @@ input:focus, select:focus { outline: 3px solid var(--dorado); }
 }
 .notas { font-style: italic; }
 
+.estado-partido {
+  min-height: 0;
+  margin-top: 8px;
+  text-align: center;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+.etiqueta-aet {
+  display: inline-block;
+  padding: 2px 7px;
+  border: 1px solid currentColor;
+  color: var(--rojo);
+  font-style: normal;
+  white-space: nowrap;
+}
+.timeline-partido {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed rgba(0,0,0,0.25);
+  font-size: 0.76rem;
+}
+.timeline-evento {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+}
+.timeline-evento time {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: center;
+  font-family: var(--fuente-numeros);
+  font-weight: 700;
+  opacity: 0.68;
+}
+.timeline-contenido {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.lado-a .timeline-contenido { grid-column: 1; justify-self: end; text-align: right; }
+.lado-b .timeline-contenido { grid-column: 3; justify-self: start; text-align: left; }
+.evento-cambio .timeline-contenido { color: rgba(24, 29, 25, 0.76); }
+.evento-cambio small { display: block; font-size: 0.66rem; font-weight: 400; }
+.evento-icono { flex: 0 0 auto; }
+.cambio-icono { color: var(--verde-oscuro); font-size: 1rem; font-weight: 700; }
+
 .grilla-grupos {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
   gap: 16px; max-width: 900px; margin: 0 auto;
@@ -433,7 +979,14 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
   align-items: start;
 }
 @media (max-width: 1150px) { .draft7 { grid-template-columns: 1fr 1fr; } .panel-box { grid-column: 1 / -1; } }
-@media (max-width: 680px) { .draft7 { grid-template-columns: 1fr; } }
+/* En tablet dos columnas estrechas no alcanzan para una defensa de cinco. */
+@media (max-width: 1010px) { .draft7 { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 680px) {
+  #app:has(.draft) { padding-left: 12px; padding-right: 12px; }
+  .draft7 { grid-template-columns: minmax(0, 1fr); gap: 18px; }
+  .draft .cabecera-sala { margin-bottom: 20px; padding-bottom: 14px; }
+  .panel-izq { padding: 14px; }
+}
 
 .panel-izq, .boxscore {
   background: var(--crema);
@@ -493,7 +1046,13 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
 .salio-label { font-size: 0.65rem; letter-spacing: 0.35em; font-weight: 700; opacity: 0.6; }
 .salio-pais { font-family: var(--fuente-display); font-size: 1.5rem; }
 .salio-mundial { color: var(--rojo); font-family: var(--fuente-display); font-size: 1.05rem; }
-.salio-apodo { font-style: italic; font-size: 0.82rem; opacity: 0.75; }
+.salio-resultado {
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.82;
+}
 
 .resorteo { display: flex; flex-direction: column; gap: 7px; }
 .resorteo-titulo { font-size: 0.68rem; font-weight: 700; letter-spacing: 0.14em; opacity: 0.7; }
@@ -508,13 +1067,16 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
 .fila-jugador {
   display: grid; grid-template-columns: minmax(96px, 1fr) minmax(68px, 78px) 36px;
   align-items: center; gap: 8px;
+  min-height: 44px;
   padding: 7px 8px 7px 10px;
   background: transparent; border: 0;
   border-bottom: 1px solid rgba(0,0,0,0.12);
   cursor: pointer; text-align: left;
   font-family: var(--fuente-cuerpo); font-size: 0.92rem;
 }
-.fila-jugador:hover:not(:disabled) { background: var(--rojo); color: var(--crema); }
+@media (hover: hover) and (pointer: fine) {
+  .fila-jugador:hover:not(:disabled) { background: var(--rojo); color: var(--crema); }
+}
 .fila-jugador.seleccionado { background: var(--rojo); color: var(--crema); }
 .fila-jugador:disabled { opacity: 0.35; cursor: not-allowed; }
 .fj-pos {
@@ -531,7 +1093,9 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
   margin-left: 1px;
   vertical-align: 0.18em;
 }
-.fila-jugador:hover:not(:disabled) .fj-pos small,
+@media (hover: hover) and (pointer: fine) {
+  .fila-jugador:hover:not(:disabled) .fj-pos small { color: var(--crema); }
+}
 .fila-jugador.seleccionado .fj-pos small { color: var(--crema); }
 .fj-nombre { font-weight: 700; }
 .fj-nivel {
@@ -543,14 +1107,6 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
   overflow: visible;
 }
 .pasar-btn { margin-top: 8px; }
-.btn-volver {
-  margin-top: 6px; width: 100%;
-  border: 2px solid rgba(27,26,22,0.32);
-  background: transparent; color: var(--tinta);
-  font-size: 0.8rem; font-weight: 700; letter-spacing: 0.04em;
-  padding: 9px 14px; cursor: pointer; box-shadow: none;
-}
-.btn-volver:hover { background: rgba(27,26,22,0.08); border-color: var(--tinta); }
 .jugador-seleccionado {
   background: rgba(197,54,44,0.12);
   border-left: 4px solid var(--rojo);
@@ -611,16 +1167,34 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
   top: 50%;
   transform: translate(-50%, -54%);
 }
-.slot-disponible .slot-circulo.vacio {
-  background: var(--rojo);
+.slot-natural .slot-circulo.vacio,
+.slot-adaptado .slot-circulo.vacio,
+.slot-imposible .slot-circulo.vacio {
   color: var(--crema);
-  border: 3px solid var(--crema);
-  box-shadow: 0 0 0 3px var(--rojo), 0 0 18px rgba(197,54,44,0.75);
-  animation: tintinear 0.9s ease-in-out infinite;
+  border-style: solid;
+  border-width: 3px;
 }
-@keyframes tintinear {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.09); }
+.slot-natural .slot-circulo.vacio {
+  background: #276d49;
+  border-color: #b9d9c4;
+  box-shadow: 0 0 0 3px rgba(39,109,73,0.72);
+}
+.slot-adaptado .slot-circulo.vacio {
+  background: #b56d2b;
+  border-color: #efd18a;
+  box-shadow: 0 0 0 3px rgba(181,109,43,0.7);
+}
+.slot-imposible .slot-circulo.vacio {
+  background: #743833;
+  border-color: rgba(244,236,216,0.58);
+  box-shadow: none;
+  opacity: 0.82;
+}
+.slot-penalizacion {
+  color: var(--crema);
+  font-family: var(--fuente-numeros);
+  font-size: 0.64rem !important;
+  font-weight: 700;
 }
 .slot-puesto {
   background: var(--rojo);
@@ -639,8 +1213,39 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+@media (max-width: 680px) {
+  .pasto7 {
+    min-height: 600px;
+    padding: 24px 8px;
+  }
+  .fila-cancha7 { width: 100%; }
+  .slot { min-width: 52px; }
+  .slot-circulo { width: 50px; height: 50px; font-size: 1.05rem; }
+  .slot-circulo small { top: 30px; }
+  .slot-puesto { font-size: 0.54rem; padding-inline: 4px; }
+  .slot-nombre {
+    max-width: 64px;
+    padding-inline: 4px;
+    font-size: 0.58rem;
+    letter-spacing: 0.02em;
+  }
+}
+
 /* box score */
 .boxscore { padding: 18px 20px; }
+.boxscore.banca-score {
+  margin-top: 14px;
+  border-color: var(--dorado);
+  box-shadow: 5px 5px 0 rgba(0,0,0,0.35), inset 0 4px 0 var(--dorado);
+}
+.banca-score .box-cabecera { border-bottom-color: var(--dorado); }
+.banca-score .box-titulo { color: var(--rojo); }
+.banca-score .box-fuerzas {
+  line-height: 1.45;
+  letter-spacing: 0.07em;
+}
+.banca-score .box-fila { grid-template-columns: 40px minmax(0, 1fr) auto; }
+.banca-score .box-nombre { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .box-cabecera {
   display: flex; flex-direction: column; gap: 6px;
   border-bottom: 2px solid var(--tinta);
@@ -722,6 +1327,25 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
 /* goles: local a la izquierda, visitante a la derecha */
 .detalle-partido > span:first-child { text-align: left; }
 .detalle-partido > .der { text-align: right; }
+
+@media (max-width: 600px) {
+  .partido,
+  .partido.mi-partido { padding: 12px 10px; }
+  .marcador { gap: 6px; }
+  .marcador .equipo { min-width: 0; overflow-wrap: anywhere; }
+  .partido.mi-partido .equipo { font-size: 0.9rem; }
+  .partido.mi-partido .resultado,
+  .resultado { min-width: 72px; padding-inline: 8px; font-size: 1.3rem; }
+  .timeline-evento { grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1fr); gap: 4px; }
+  .timeline-contenido { align-items: flex-start; }
+  .evento-cambio .timeline-contenido { flex-direction: column; gap: 0; }
+  .lado-a .timeline-contenido { align-items: flex-end; }
+  .lado-b .timeline-contenido { align-items: flex-start; }
+  .evento-cambio .evento-icono { display: none; }
+  .boxscore.banca-score { padding-inline: 14px; }
+  .banca-score .box-fila { grid-template-columns: 34px minmax(0, 1fr) auto; gap: 6px; }
+  .banca-score .box-fuerzas { font-size: 0.66rem; }
+}
 
 /* ---------- ruleta del sorteo ---------- */
 
@@ -816,6 +1440,10 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
   position: fixed; inset: 0; z-index: 60;
   background: rgba(10, 20, 14, 0.88);
   display: grid; place-items: center;
+  padding: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   animation: aparecer 0.3s ease both;
 }
 .tanda {
@@ -824,7 +1452,7 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
   box-shadow: 0 0 0 3px var(--dorado), 10px 10px 0 rgba(0,0,0,0.5);
   padding: 22px 26px;
   text-align: center;
-  width: min(480px, calc(100vw - 32px));
+  width: min(480px, 100%);
 }
 .tanda-titulo {
   font-family: var(--fuente-display);
@@ -874,7 +1502,7 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
 .arco {
   position: absolute; top: 18px; left: 50%;
   transform: translateX(-50%);
-  width: 260px; height: 92px;
+  width: min(260px, calc(100% - 16px)); height: 92px;
   border: 5px solid #fff;
   border-bottom: 0;
   /* red del arco */
@@ -922,6 +1550,37 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
 .tanda-msg { margin: 12px 0; font-size: 1rem; font-weight: 700; min-height: 44px; }
 .tanda-botones { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
 .btn-lado { font-size: 1.05rem; padding: 12px 20px; }
+
+/* En poca altura la tanda empieza arriba y el propio overlay permite llegar
+   a todos los controles; evita que el centrado recorte cabecera o botones. */
+@media (max-height: 700px) {
+  .overlay-tanda { align-items: start; padding: 10px; }
+  .tanda { margin: 0 auto; padding: 16px 18px; }
+  .tanda-turno { margin-top: 8px; padding-block: 7px; }
+  .tanda-marcas { margin-block: 8px; }
+  .arco-zona { height: 150px; }
+  .tanda-msg { margin-block: 8px; min-height: 36px; }
+}
+
+@media (max-width: 360px) {
+  .overlay-tanda { padding: 8px; }
+  .tanda { padding: 15px 12px; }
+  .tanda-titulo { font-size: 1.12rem; }
+  .tanda-fila {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 3px 8px;
+  }
+  .tanda-eq { min-width: 0; overflow-wrap: anywhere; }
+  .marcas {
+    grid-column: 1 / -1;
+    min-width: 0;
+    text-align: left;
+    line-height: 1.3;
+  }
+  .arco-zona { height: 150px; }
+  .tanda-botones { gap: 8px; }
+  .btn-lado { flex: 1 1 112px; min-width: 0; padding: 10px 8px; }
+}
 
 /* ---------- eliminación ---------- */
 

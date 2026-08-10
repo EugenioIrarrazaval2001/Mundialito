@@ -44,7 +44,8 @@ export function pantallaTorneo(root) {
   const abandonados = (players.find(p => p.id === room.host_id)?.resultados?._abandonados) || [];
   const modo = parseModo(room.modo).modo;
   const soloPenales = modo === 'penales';
-  const mundial = simularMundial(room.seed, humanos, overrides, parseModo(room.modo).total, soloPenales, squadsParaModo(modo));
+  const poolSala = squadsParaModo(modo, room.enabled_squads);
+  const mundial = simularMundial(room.seed, humanos, overrides, parseModo(room.modo).total, soloPenales, poolSala);
   marcarPendientes(mundial, abandonados);
   const pasos = construirPasos(mundial);
 
@@ -99,6 +100,10 @@ export function pantallaTorneo(root) {
     sessionStorage.setItem(kPaso, paso);
     publicarPaso();
     const visto = Number(sessionStorage.getItem(kVisto) || -1);
+    // Una vez notificada su eliminación, el DT queda como espectador hasta que
+    // aparezca el campeón. Antes de la notificación no ocultamos nada para no
+    // adelantar visualmente el resultado de un partido que aún está en vivo.
+    const espectadorForzado = Boolean(sessionStorage.getItem(kElim)) && paso < pasos.length - 1;
     // en "solo penales" no hay partido que animar: se va directo al resultado/tanda
     const enVivo = !soloPenales && paso > visto && Boolean(pasos[paso].partidos);
     // tanda sin resolver en este paso: bloquea el avance
@@ -107,7 +112,7 @@ export function pantallaTorneo(root) {
     render(root, html`
       <div class="torneo">
         <header class="cabecera-sala">
-          <button id="btn-salir" class="btn btn-mini">← Salir</button>
+          ${espectadorForzado ? '' : '<button id="btn-salir" class="btn btn-mini">← Salir</button>'}
           <div class="ticket"><span class="ticket-label">MUNDIALITO</span>
             <span class="ticket-codigo">${esc(room.code)}</span></div>
           <div class="controles-torneo">
@@ -138,7 +143,7 @@ export function pantallaTorneo(root) {
       </div>
     `);
 
-    $('#btn-salir', root).addEventListener('click', () => { clearInterval(relojTimer); salirDeSala(); });
+    $('#btn-salir', root)?.addEventListener('click', () => { clearInterval(relojTimer); salirDeSala(); });
     $('#btn-jugadores', root)?.addEventListener('click', () => abrirGestionJugadores(room));
 
     if (enVivo) {
@@ -156,9 +161,15 @@ export function pantallaTorneo(root) {
       if (pend && pend.pendiente.includes(miEq)) {
         // ¡me toca jugar la tanda!
         abrirTanda(root, mundial, pend, room);
-      } else if (!pend && paso === pasoElim && !sessionStorage.getItem(kElim)) {
+      } else if (!pend && pasoElim >= 0 && paso >= pasoElim && paso < pasos.length - 1 &&
+          !sessionStorage.getItem(kElim)) {
         // ¿quedé eliminado en este paso? fin del juego
-        mostrarEliminado(root, mundial, () => sessionStorage.setItem(kElim, '1'));
+        mostrarEliminado(
+          root,
+          mundial,
+          () => sessionStorage.setItem(kElim, '1'),
+          dibujar,
+        );
       }
     }
   };
@@ -266,7 +277,10 @@ function textoLivePenales(mundial, partido) {
 // ---------- reloj en vivo ----------
 
 function animarPartidos(root, partidos, alTerminar) {
-  const maxMin = 90; // sin alargue: el empate va directo a penales
+  // En una fecha pueden convivir partidos de 90' y 120'. El reloj de la
+  // pantalla acompaña al más largo, pero cada tarjeta deja de incorporar
+  // eventos cuando alcanza su propia duración.
+  const maxMin = Math.max(90, ...partidos.map(duracionPartido));
   let minuto = 0;
   const reloj = $('#reloj', root);
 
@@ -277,9 +291,10 @@ function animarPartidos(root, partidos, alTerminar) {
       const p = partidos[i];
       const cont = $(`[data-partido="${i}"]`, root);
       if (!cont) continue;
-      const visibles = p.eventos.filter(e => e.minuto <= minuto);
-      const ga = visibles.filter(e => e.equipoId === p.idA).length;
-      const gb = visibles.filter(e => e.equipoId === p.idB).length;
+      const minutoPartido = Math.min(minuto, duracionPartido(p));
+      const golesVisibles = (p.eventos || []).filter(e => e.minuto <= minutoPartido);
+      const ga = golesVisibles.filter(e => e.equipoId === p.idA).length;
+      const gb = golesVisibles.filter(e => e.equipoId === p.idB).length;
       const marcador = $('.resultado', cont);
       const nuevo = `${ga} – ${gb}`;
       if (marcador.textContent.trim() !== nuevo.trim()) {
@@ -288,20 +303,77 @@ function animarPartidos(root, partidos, alTerminar) {
         void cont.offsetWidth; // reinicia la animación
         cont.classList.add('gol-flash');
       }
-      // goles del local pegados a la izquierda, del visitante a la derecha
-      const lado = (sel, equipoId) => {
-        const el = $(sel, cont);
-        if (el) el.innerHTML = visibles.filter(e => e.equipoId === equipoId)
-          .map(e => `<span class="gol-evento">⚽ ${e.minuto}' ${esc(e.jugador)}</span>`).join(' ');
-      };
-      lado('.vivo-a', p.idA);
-      lado('.vivo-b', p.idB);
+      const timeline = $('.timeline-partido', cont);
+      if (timeline) timeline.innerHTML = timelinePartidoHTML(p, minutoPartido);
+
+      const estado = $('.estado-partido', cont);
+      if (estado && p.alargue && minutoPartido >= 90) {
+        estado.innerHTML = etiquetaAlargueHTML(p, minutoPartido < 120);
+      }
     }
     if (minuto >= maxMin) alTerminar();
   }, 120);
 }
 
 // ---------- helpers de presentación ----------
+
+function duracionPartido(p) {
+  return Number(p?.duracion) === 120 || p?.alargue ? 120 : 90;
+}
+
+function nombreJugador(id) {
+  return JUGADORES_BY_ID[id]?.nombre || id || 'Jugador';
+}
+
+function nombreGoleador(evento) {
+  return evento.jugador || nombreJugador(evento.jugadorId);
+}
+
+// Los datos siguen separados (eventos = goles; sustituciones = cambios), y
+// solo se combinan aquí para presentarlos en el orden en que ocurrieron.
+function eventosTimeline(p, hastaMin = Infinity) {
+  const goles = (p.eventos || []).map((evento, orden) => ({
+    ...evento,
+    tipo: 'gol',
+    orden,
+  }));
+  const cambios = (p.sustituciones || []).map((evento, orden) => ({
+    ...evento,
+    tipo: 'cambio',
+    orden,
+  }));
+  return [...goles, ...cambios]
+    .filter(evento => evento.minuto <= hastaMin)
+    .sort((a, b) => a.minuto - b.minuto ||
+      (a.tipo === b.tipo ? a.orden - b.orden : a.tipo === 'cambio' ? -1 : 1) ||
+      String(a.equipoId).localeCompare(String(b.equipoId)));
+}
+
+function textoEventoHTML(evento) {
+  if (evento.tipo === 'gol') {
+    return `<span class="evento-icono" aria-hidden="true">⚽</span><b>${esc(nombreGoleador(evento))}</b>`;
+  }
+  return `<span class="evento-icono cambio-icono" aria-hidden="true">⇄</span>` +
+    `<span><b>Entra ${esc(nombreJugador(evento.entraId))}</b>` +
+    `<small>Sale ${esc(nombreJugador(evento.saleId))}${evento.puesto ? ` · ${esc(evento.puesto)}` : ''}</small></span>`;
+}
+
+function timelinePartidoHTML(p, hastaMin = Infinity) {
+  return eventosTimeline(p, hastaMin).map(evento => {
+    const lado = evento.equipoId === p.idB ? 'lado-b' : 'lado-a';
+    return `<div class="timeline-evento ${lado} evento-${evento.tipo}">` +
+      `<span class="timeline-contenido">${textoEventoHTML(evento)}</span>` +
+      `<time>${evento.minuto}'</time></div>`;
+  }).join('');
+}
+
+function etiquetaAlargueHTML(p, enJuego = false) {
+  if (!p.alargue) return '';
+  const marcador90 = Number.isFinite(p.goles90A) && Number.isFinite(p.goles90B)
+    ? ` · 90': ${p.goles90A}–${p.goles90B}`
+    : '';
+  return `<span class="etiqueta-aet">${enJuego ? 'ALARGUE' : 'AET'}${marcador90}</span>`;
+}
 
 function nombreEquipo(mundial, id) {
   const e = mundial.equipos.find(e => e.id === id);
@@ -332,16 +404,11 @@ function partidoHTML(mundial, p, idx, final) {
           <span class="resultado">0 – 0</span>
           <span class="equipo der">${nombreEquipo(mundial, p.idB)}</span>
         </div>
-        <div class="detalle-partido">
-          <span class="vivo-a"></span><span class="notas"></span><span class="der vivo-b"></span>
-        </div>
+        <div class="estado-partido" aria-live="polite"></div>
+        <div class="timeline-partido" aria-live="polite"></div>
       </div>`;
   }
 
-  const goleadoresA = p.eventos.filter(e => e.equipoId === p.idA)
-    .map(e => `${esc(e.jugador)} ${e.minuto}'`).join(', ');
-  const goleadoresB = p.eventos.filter(e => e.equipoId === p.idB)
-    .map(e => `${esc(e.jugador)} ${e.minuto}'`).join(', ');
   const pendiente = Boolean(p.pendiente);
   // si el marcador del partido ya es el de la tanda (modo solo penales), no repito los números
   const definidoEnPenales = p.penales && p.golesA === p.penales.golesA && p.golesB === p.penales.golesB;
@@ -349,6 +416,7 @@ function partidoHTML(mundial, p, idx, final) {
   if (pendiente) notas.push('🧤 ¡a penales!');
   else if (definidoEnPenales) notas.push('🧤 definido en penales');
   else if (p.penales) notas.push(`penales ${p.penales.golesA}–${p.penales.golesB}`);
+  if (p.alargue) notas.unshift(etiquetaAlargueHTML(p));
 
   return html`
     <div class="partido ${mio}">
@@ -357,12 +425,8 @@ function partidoHTML(mundial, p, idx, final) {
         <span class="resultado">${p.golesA} – ${p.golesB}</span>
         <span class="equipo der ${!pendiente && p.ganador === p.idB ? 'ganador' : ''}">${nombreEquipo(mundial, p.idB)}</span>
       </div>
-      ${(goleadoresA || goleadoresB || notas.length) ? html`
-        <div class="detalle-partido">
-          <span>${goleadoresA}</span>
-          <span class="notas">${notas.join(' · ')}</span>
-          <span class="der">${goleadoresB}</span>
-        </div>` : ''}
+      ${notas.length ? `<div class="estado-partido notas">${notas.join(' <span aria-hidden="true">·</span> ')}</div>` : ''}
+      ${eventosTimeline(p).length ? `<div class="timeline-partido">${timelinePartidoHTML(p)}</div>` : ''}
     </div>`;
 }
 
@@ -662,22 +726,41 @@ function calcularEliminacion(mundial, miEq, pasos) {
   return -1;
 }
 
-function mostrarEliminado(root, mundial, marcar) {
+function mostrarEliminado(root, mundial, marcar, alSeguir) {
+  if (document.querySelector('.overlay-elim')) return;
   marcar();
   const div = document.createElement('div');
   div.className = 'overlay-elim';
   div.innerHTML = html`
-    <div class="cartel-elim">
-      <p class="elim-titulo">ELIMINADO</p>
+    <div class="cartel-elim" role="dialog" aria-modal="true" aria-labelledby="titulo-eliminado">
+      <p class="elim-titulo" id="titulo-eliminado">ELIMINADO</p>
       <p class="elim-texto">Tu combinado quedó fuera del Mundialito.<br>Se acabó el juego para ti, DT. 😔</p>
       <div class="elim-botones">
-        <button id="elim-mirar" class="btn">📺 Seguir mirando</button>
-        <button id="elim-salir" class="btn btn-primario">Salir</button>
+        <button id="elim-mirar" class="btn">📺 Verlo por TV</button>
       </div>
     </div>`;
+  const appRoot = document.getElementById('app');
+  const appEraInerte = appRoot?.hasAttribute('inert') ?? false;
+  const cerrar = () => {
+    document.removeEventListener('keydown', manejarTeclado);
+    div.remove();
+    if (appRoot && !appEraInerte) appRoot.inert = false;
+    alSeguir?.();
+  };
+  const manejarTeclado = e => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      cerrar();
+    } else if (e.key === 'Tab') {
+      e.preventDefault();
+      $('#elim-mirar', div)?.focus();
+    }
+  };
+  if (appRoot) appRoot.inert = true;
   document.body.appendChild(div);
-  $('#elim-mirar', div).addEventListener('click', () => div.remove());
-  $('#elim-salir', div).addEventListener('click', () => { div.remove(); salirDeSala(); });
+  document.addEventListener('keydown', manejarTeclado);
+  $('#elim-mirar', div).addEventListener('click', cerrar);
+  $('#elim-mirar', div).focus();
 }
 
 // ---------- pasos de la reproducción ----------
@@ -734,7 +817,7 @@ function construirPasos(mundial) {
             <div class="banderines">${'<i></i>'.repeat(16)}</div>
             <div class="tribuna"><span class="publico"></span></div>
             <h2 class="titulo-gran-final">⭐ LA GRAN FINAL ⭐</h2>
-            <p class="final-sub">EL ESTADIO ESTÁ QUE ARDE · ${m.grupos.length ? '90 MINUTOS POR LA GLORIA' : 'TODO SE DECIDE DESDE LOS DOCE PASOS'}</p>
+            <p class="final-sub">EL ESTADIO ESTÁ QUE ARDE · ${m.grupos.length ? 'LA GLORIA NO ADMITE EMPATES' : 'TODO SE DECIDE DESDE LOS DOCE PASOS'}</p>
             <div class="lista-partidos final-grande">
               ${partidoHTML(m, ordenados[0], 0, final)}
             </div>

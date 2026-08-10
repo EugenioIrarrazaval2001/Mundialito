@@ -1,8 +1,10 @@
 // Capa de red: salas multijugador vía Supabase, o modo local si no hay config.
 //
 // Modelo de datos:
-//   rooms:   code (pk), status: lobby|draft|running, seed, host_id, modo ('clasico'|'almanaque')
-//   players: id (pk), room_code, name, squad_key, formacion, lineup (json), ready
+//   rooms:   code (pk), status: lobby|draft|running, seed, host_id, modo,
+//            enabled_squads (text[], null en salas antiguas = pool completo)
+//   players: id (pk), room_code, name, squad_key, formacion, lineup (json), ready,
+//            last_seen (heartbeat para relevar al anfitrión si cierra la pestaña)
 
 import { SUPABASE_URL, SUPABASE_ANON_KEY } from '../config.js';
 
@@ -37,12 +39,13 @@ function codigoSala() {
 
 // ---------- MODO ONLINE ----------
 
-async function onlineCrearSala(nombre, modo) {
+async function onlineCrearSala(nombre, modo, enabledSquads = null) {
   const sb = await client();
   const code = codigoSala();
   const seed = Math.floor(Math.random() * 2 ** 31);
+  const enabled_squads = Array.isArray(enabledSquads) ? [...enabledSquads] : null;
   const { error: e1 } = await sb.from('rooms')
-    .insert({ code, status: 'lobby', seed, host_id: miId(), modo });
+    .insert({ code, status: 'lobby', seed, host_id: miId(), modo, enabled_squads });
   if (e1) throw e1;
   const { error: e2 } = await sb.from('players')
     .insert({ id: miId(), room_code: code, name: nombre, ready: false });
@@ -98,18 +101,74 @@ async function onlineEliminarJugador(code, playerId) {
   if (error) throw error;
 }
 
+// El heartbeat y el relevo se resuelven dentro de PostgreSQL para que dos
+// clientes no puedan proclamarse anfitriones a la vez. La función también
+// actualiza last_seen del jugador que hace el pulso.
+async function onlineMantenerPresencia(code, playerId) {
+  const sb = await client();
+  const { error } = await sb.rpc('touch_and_claim_room_host', {
+    p_room_code: code,
+    p_player_id: playerId,
+  });
+  if (error) throw error;
+}
+
+// Salida explícita: la RPC hace el relevo y la baja en una sola transacción.
+// Durante el Mundial conserva la fila/equipo y lo marca como ausente; antes de
+// empezar sí elimina la fila del jugador.
+async function onlineSalirSala(code, playerId) {
+  const sb = await client();
+  const { error } = await sb.rpc('leave_room_and_handoff', {
+    p_room_code: code,
+    p_player_id: playerId,
+  });
+  if (error) throw error;
+}
+
 // Suscripción: callback con el estado completo ante cualquier cambio.
 // Usa realtime si está disponible y además sondea cada 3 s como respaldo.
 function onlineSuscribir(code, callback) {
   let activo = true;
+  let jugadoresConocidos = new Map();
+  let refrescando = false;
+  let refrescoPendiente = false;
+  const firmaJugador = p => JSON.stringify({
+    id: p.id, room_code: p.room_code, name: p.name, squad_key: p.squad_key,
+    formacion: p.formacion, lineup: p.lineup, ready: p.ready,
+    resultados: p.resultados,
+  });
   const refrescar = async () => {
     if (!activo) return;
-    try { callback(await onlineEstado(code)); } catch { /* reintenta en el próximo tick */ }
+    if (refrescando) { refrescoPendiente = true; return; }
+    refrescando = true;
+    try {
+      const estado = await onlineEstado(code);
+      jugadoresConocidos = new Map((estado.players || []).map(p => [String(p.id), firmaJugador(p)]));
+      callback(estado);
+    } catch { /* reintenta en el próximo tick */ }
+    finally {
+      refrescando = false;
+      if (refrescoPendiente && activo) {
+        refrescoPendiente = false;
+        queueMicrotask(refrescar);
+      }
+    }
+  };
+  // Los heartbeats actualizan players.last_seen. Se ignoran esos UPDATE si el
+  // resto de los datos visibles del jugador no cambió, para no convertir cada
+  // pulso de cada jugador en dos consultas completas por cada cliente.
+  const cambioJugador = payload => {
+    if (payload.eventType === 'UPDATE' && payload.new?.id != null) {
+      const id = String(payload.new.id);
+      const firma = firmaJugador(payload.new);
+      if (jugadoresConocidos.get(id) === firma) return;
+    }
+    refrescar();
   };
   let canal = null;
   client().then(sb => {
     canal = sb.channel('sala-' + code)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'players', filter: `room_code=eq.${code}` }, refrescar)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'players', filter: `room_code=eq.${code}` }, cambioJugador)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'rooms', filter: `code=eq.${code}` }, refrescar)
       .subscribe();
   });
@@ -131,10 +190,11 @@ function localEmitir() {
   for (const cb of local.listeners) cb(estado);
 }
 
-async function localCrearSala(nombre, modo) {
+async function localCrearSala(nombre, modo, enabledSquads = null) {
   local.room = {
     code: 'LOCAL', status: 'lobby',
     seed: Math.floor(Math.random() * 2 ** 31), host_id: miId(), modo,
+    enabled_squads: Array.isArray(enabledSquads) ? [...enabledSquads] : null,
   };
   local.players = [{ id: miId(), room_code: 'LOCAL', name: nombre, ready: false, squad_key: null, formacion: null, lineup: null, resultados: {} }];
   return 'LOCAL';
@@ -160,6 +220,27 @@ async function localEliminarJugador(_code, playerId) {
   localEmitir();
 }
 
+async function localMantenerPresencia() {
+  // El modo local tiene un solo jugador y no necesita heartbeat ni relevo.
+}
+
+async function localSalirSala(_code, playerId) {
+  if (!local.room) return;
+  if (local.room.status === 'running') {
+    // Se conserva el equipo, igual que online, aunque ya no haya clientes
+    // escuchando esta sala local.
+    const p = local.players.find(pl => pl.id === playerId);
+    if (p) p.resultados = {
+      ...(p.resultados || {}),
+      _abandonados: [...new Set([...(p.resultados?._abandonados || []), playerId])],
+    };
+  } else {
+    local.players = local.players.filter(p => p.id !== playerId);
+    if (local.room.host_id === playerId) local.room.host_id = local.players[0]?.id ?? null;
+  }
+  localEmitir();
+}
+
 function localSuscribir(_code, callback) {
   local.listeners.add(callback);
   localEstado().then(callback);
@@ -173,6 +254,7 @@ export const net = ONLINE
       crearSala: onlineCrearSala, unirse: onlineUnirse, estado: onlineEstado,
       actualizarSala: onlineActualizarSala, actualizarJugador: onlineActualizarJugador,
       eliminarJugador: onlineEliminarJugador,
+      mantenerPresencia: onlineMantenerPresencia, salirSala: onlineSalirSala,
       suscribir: onlineSuscribir,
     }
   : {
@@ -181,5 +263,6 @@ export const net = ONLINE
       estado: localEstado,
       actualizarSala: localActualizarSala, actualizarJugador: localActualizarJugador,
       eliminarJugador: localEliminarJugador,
+      mantenerPresencia: localMantenerPresencia, salirSala: localSalirSala,
       suscribir: localSuscribir,
     };

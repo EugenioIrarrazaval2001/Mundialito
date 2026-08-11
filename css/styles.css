@@ -1246,6 +1246,37 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
 }
 .banca-score .box-fila { grid-template-columns: 40px minmax(0, 1fr) auto; }
 .banca-score .box-nombre { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.banca-disponible {
+  width: 100%;
+  min-height: 44px;
+  appearance: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  background: rgba(184, 145, 60, 0.14);
+  border: 1px dashed var(--dorado);
+  cursor: pointer;
+  touch-action: manipulation;
+  transition: background 0.14s ease, box-shadow 0.14s ease, transform 0.08s ease;
+}
+.banca-disponible .box-pos { opacity: 0.85; }
+.banca-disponible .banca-destino-texto {
+  color: var(--verde-oscuro);
+  opacity: 1;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+}
+.banca-disponible:focus-visible {
+  outline: 3px solid var(--dorado);
+  outline-offset: 2px;
+}
+@media (hover: hover) and (pointer: fine) {
+  .banca-disponible:hover {
+    background: rgba(184, 145, 60, 0.26);
+    box-shadow: inset 0 0 0 1px var(--dorado);
+    transform: translateY(-1px);
+  }
+}
 .box-cabecera {
   display: flex; flex-direction: column; gap: 6px;
   border-bottom: 2px solid var(--tinta);
@@ -1268,6 +1299,7 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
 .box-vacio { opacity: 0.3; font-weight: 400; }
 .box-nivel { font-family: var(--fuente-numeros); font-weight: 700; font-size: 1.05rem; color: var(--rojo); }
 .box-fila.con-jugador { animation: entrar 0.25s ease both; }
+.banca-score .box-fila.banca-disponible { border: 1px dashed var(--dorado); }
 
 .panel-box { display: flex; flex-direction: column; gap: 14px; }
 
@@ -1433,6 +1465,195 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
 .final-grande .equipo { font-size: 1.3rem; }
 .final-grande .resultado { font-size: 2.6rem; min-width: 130px; }
 .final-grande .detalle-partido { font-size: 0.95rem; }
+
+/* ---------- pausas de 90' / 120' en eliminatorias ---------- */
+
+body:has(.overlay-resumen-ronda) { overflow: hidden; }
+
+.overlay-resumen-ronda {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  display: grid;
+  place-items: center;
+  padding: 12px;
+  overflow: hidden;
+  background: rgba(10, 20, 14, 0.88);
+}
+
+.resumen-ronda {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(920px, 100%);
+  max-height: calc(100vh - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow: hidden;
+  background: var(--crema);
+  color: var(--tinta);
+  border: 3px solid var(--tinta);
+  box-shadow: 0 0 0 3px var(--dorado), 10px 10px 0 rgba(0,0,0,0.5);
+}
+
+.resumen-ronda-cabecera {
+  padding: 18px 22px 16px;
+  text-align: center;
+  color: var(--crema);
+  background: var(--tinta);
+  border-bottom: 3px solid var(--dorado);
+}
+.resumen-sello {
+  margin-bottom: 5px;
+  color: var(--dorado);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+}
+.resumen-ronda-cabecera h2 {
+  color: var(--dorado);
+  font-size: clamp(1.45rem, 4vw, 2.15rem);
+  line-height: 1.1;
+}
+.resumen-ronda-cabecera p:last-child {
+  margin-top: 7px;
+  font-size: 0.88rem;
+  line-height: 1.35;
+}
+
+.resumen-ronda-cuerpo {
+  min-height: 0;
+  padding: 16px 20px 20px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+.resumen-seccion + .resumen-seccion { margin-top: 20px; }
+.resumen-seccion h3 {
+  margin-bottom: 9px;
+  padding-bottom: 6px;
+  color: var(--rojo);
+  border-bottom: 2px solid currentColor;
+  font-size: 0.82rem;
+  letter-spacing: 0.13em;
+}
+.resumen-seccion.alargues h3,
+.resumen-seccion.van-penales h3 { color: #8a5a00; }
+
+.resumen-partidos {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.resumen-partido {
+  min-width: 0;
+  padding: 10px 12px;
+  background: #fff;
+  border: 2px solid var(--tinta);
+  box-shadow: 2px 2px 0 rgba(0,0,0,0.18);
+}
+.resumen-partido.mi-partido {
+  outline: 3px solid var(--dorado);
+  outline-offset: 1px;
+}
+.resumen-partido.pendiente {
+  background: #fff9e9;
+  border-left: 6px solid var(--dorado);
+}
+.resumen-marcador {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+.resumen-equipo {
+  min-width: 0;
+  font-size: 0.88rem;
+  font-weight: 700;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+.resumen-equipo .dt.ia { display: none; }
+.resumen-marcador > strong {
+  min-width: 62px;
+  padding: 3px 7px;
+  color: var(--crema);
+  background: var(--tinta);
+  font-family: var(--fuente-display);
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+}
+.resumen-mensajes {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+  padding-top: 7px;
+  border-top: 1px dashed rgba(0,0,0,0.25);
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+.resumen-avanza { color: var(--verde-oscuro); font-weight: 700; }
+.resumen-eliminado { color: var(--rojo); }
+.resumen-partido.pendiente .resumen-mensajes {
+  color: #684500;
+  font-weight: 700;
+}
+.resumen-aet {
+  color: #666;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.resumen-ronda-pie {
+  padding: 13px 20px;
+  text-align: center;
+  background: var(--crema-sombra);
+  border-top: 2px solid var(--tinta);
+}
+.resumen-ronda-pie .btn {
+  min-height: 44px;
+  max-width: 430px;
+  width: 100%;
+  border-color: var(--tinta);
+}
+.resumen-espera {
+  padding: 9px 12px;
+  color: var(--verde-oscuro);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.resumen-ronda :focus-visible {
+  outline: 3px solid var(--rojo);
+  outline-offset: 3px;
+}
+.resumen-ronda[aria-busy="true"] .resumen-ronda-cuerpo { opacity: 0.72; }
+
+@media (max-width: 640px) {
+  .overlay-resumen-ronda {
+    align-items: start;
+    padding: 8px;
+  }
+  .resumen-ronda {
+    max-height: calc(100vh - 16px);
+    max-height: calc(100dvh - 16px);
+  }
+  .resumen-ronda-cabecera { padding: 14px 12px 12px; }
+  .resumen-ronda-cabecera h2 { font-size: 1.35rem; }
+  .resumen-ronda-cabecera p:last-child { font-size: 0.8rem; }
+  .resumen-ronda-cuerpo { padding: 12px 10px 15px; }
+  .resumen-partidos { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .resumen-partido { padding: 9px 8px; }
+  .resumen-marcador { gap: 5px; }
+  .resumen-equipo { font-size: 0.8rem; }
+  .resumen-marcador > strong { min-width: 56px; padding-inline: 5px; font-size: 0.95rem; }
+  .resumen-mensajes { font-size: 0.74rem; }
+  .resumen-ronda-pie { padding: 10px; }
+}
 
 /* ---------- tanda de penales ---------- */
 

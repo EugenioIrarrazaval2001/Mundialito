@@ -1,5 +1,6 @@
 // Draft estilo 7a0: tiras el dado, sale una selección histórica de un mundial,
-// eliges UN jugador de ella, y vuelves a tirar hasta completar XI y banca.
+// eliges UN jugador y lo colocas en XI o banca. Ambos se construyen en paralelo
+// y cada colocación es irreversible.
 // 6 comodines en dos bolsas independientes: 3 para otra selección del mismo
 // Mundial y 3 para la misma selección en otro Mundial.
 
@@ -9,8 +10,8 @@ import { app, soyHost, salirDeSala } from '../main.js';
 import { SQUADS, SQUADS_BY_KEY, FORMACIONES, FORMACION_SLOTS, JUGADORES_BY_ID, RESULTADO_MUNDIAL, bandera, estadoPuestoJugador, lineaDePuesto, nivelEnPuesto, puestosJugador, squadsParaModo } from '../data/squads.js';
 import { lineupDesdeSlots, parseModo } from '../engine/engine.js';
 
-// En almanaque los candidatos permanecen ocultos. Cada jugador se revela al
-// colocarlo; los promedios generales se mantienen ocultos hasta enviar el equipo.
+// En Almanaque los candidatos permanecen ocultos; titulares y suplentes revelan
+// su nivel al colocarlos. Los promedios siguen ocultos hasta enviar el equipo.
 function nivelesOcultos(room, draft) {
   return parseModo(room.modo).modo === 'almanaque' && !draft.enviado;
 }
@@ -28,7 +29,7 @@ function chipEstadoTexto(draft, room) {
 
 const ESTILOS = [['defensivo', 'Defensivo'], ['equilibrado', 'Equilibrado'], ['ofensivo', 'Ofensivo']];
 const ESTILOS_VALIDOS = new Set(ESTILOS.map(([valor]) => valor));
-const PROGRESO_DRAFT_VERSION = 3;
+const PROGRESO_DRAFT_VERSION = 4;
 const COMODINES_POR_TIPO = 3;
 const CUOTAS_BANCA = Object.freeze({ POR: 1, DEF: 2, MED: 2, DEL: 2 });
 const SLOTS_BANCA = Object.freeze(['POR', 'DEF', 'DEF', 'MED', 'MED', 'DEL', 'DEL']);
@@ -69,9 +70,7 @@ function guardarProgresoDraft(draft) {
     comodinesOtraSeleccion: draft.comodinesOtraSeleccion,
     comodinesOtroMundial: draft.comodinesOtroMundial,
     oferta: draft.oferta?.key ?? null,
-    colocando: draft.colocando
-      ? { id: draft.colocando.id, puesto: draft.colocando.puesto }
-      : null,
+    colocando: draft.colocando ? { id: draft.colocando.id } : null,
     ofrecidas: [...draft.ofrecidas],
     iniciado: draft.iniciado,
     // girando es deliberadamente transitorio: al recargar se muestra la oferta ya decidida.
@@ -99,13 +98,27 @@ function restaurarProgresoDraft(base, room) {
       ...raw,
       version: PROGRESO_DRAFT_VERSION,
       bench: [],
+      colocando: raw.colocando ? { id: raw.colocando.id } : null,
       comodinesOtraSeleccion: COMODINES_POR_TIPO,
       comodinesOtroMundial: COMODINES_POR_TIPO,
     };
   } else if (raw?.version === 2) {
     // La v2 terminaba al completar el XI. Un progreso parcial continúa ahora
     // con exactamente los mismos picks y la banca vacía.
-    raw = { ...raw, version: PROGRESO_DRAFT_VERSION, bench: [] };
+    raw = {
+      ...raw,
+      version: PROGRESO_DRAFT_VERSION,
+      bench: [],
+      colocando: raw.colocando ? { id: raw.colocando.id } : null,
+    };
+  } else if (raw?.version === 3) {
+    // La v3 ya guardaba banca, pero la habilitaba solo después del XI y
+    // preseleccionaba un puesto de cancha. Conservamos todo el progreso válido.
+    raw = {
+      ...raw,
+      version: PROGRESO_DRAFT_VERSION,
+      colocando: raw.colocando ? { id: raw.colocando.id } : null,
+    };
   }
 
   const invalido = () => {
@@ -154,9 +167,7 @@ function restaurarProgresoDraft(base, room) {
 
   const bench = [];
   const conteoBanca = { POR: 0, DEF: 0, MED: 0, DEL: 0 };
-  if (raw.bench.length > TOTAL_BANCA || (raw.bench.length && picks.length !== slots.length)) {
-    return invalido();
-  }
+  if (raw.bench.length > TOTAL_BANCA || raw.picks.length + raw.bench.length > 18) return invalido();
   for (const suplente of raw.bench) {
     if (!suplente || typeof suplente.id !== 'string' ||
         !Object.hasOwn(CUOTAS_BANCA, suplente.categoria) ||
@@ -196,15 +207,14 @@ function restaurarProgresoDraft(base, room) {
   };
   if (raw.colocando !== null) {
     if (!raw.colocando || typeof raw.colocando.id !== 'string' ||
-        typeof raw.colocando.puesto !== 'string' || !oferta || picks.length === slots.length) return invalido();
+        !oferta) return invalido();
     const jugador = JUGADORES_BY_ID[raw.colocando.id];
     const persona = jugador ? `${jugador.squad.pais}|${jugador.nombre}` : null;
-    const opciones = jugador && jugador.squad.key === oferta.key &&
-      !idsUsados.has(jugador.id) && !personasUsadas.has(persona)
-      ? puestosDisponibles(restaurado, jugador)
-      : [];
-    if (!opciones.some(o => o.puesto === raw.colocando.puesto)) return invalido();
-    restaurado.colocando = { id: jugador.id, puesto: raw.colocando.puesto };
+    const puedeColocarse = jugador && jugador.squad.key === oferta.key &&
+      !idsUsados.has(jugador.id) && !personasUsadas.has(persona) &&
+      tieneDestinoDisponible(restaurado, jugador);
+    if (!puedeColocarse) return invalido();
+    restaurado.colocando = { id: jugador.id };
   }
   return restaurado;
 }
@@ -224,7 +234,7 @@ export function pantallaDraft(root) {
     comodinesOtraSeleccion: COMODINES_POR_TIPO,
     comodinesOtroMundial: COMODINES_POR_TIPO,
     oferta: null,         // plantel sorteado este turno (null = hay que tirar)
-    colocando: null,      // { id, puesto } elegido, esperando click en la cancha
+    colocando: null,      // { id } elegido, esperando click en XI o banca
     ofrecidas: new Set(), // keys ya ofrecidas, para no repetir
     enviado: yo.ready,
     // formación y estilo se eligen al principio; al empezar a armar quedan fijos
@@ -348,8 +358,13 @@ function puestosDisponibles(draft, jugador) {
 }
 
 function cupoBancaDisponible(draft, jugador) {
-  if (!onceCompleto(draft) || !Object.hasOwn(CUOTAS_BANCA, jugador.pos)) return false;
+  if (!Object.hasOwn(CUOTAS_BANCA, jugador.pos)) return false;
   return conteoBanca(draft)[jugador.pos] < CUOTAS_BANCA[jugador.pos];
+}
+
+function tieneDestinoDisponible(draft, jugador) {
+  return puestosDisponibles(draft, jugador).length > 0 ||
+    cupoBancaDisponible(draft, jugador);
 }
 
 function jugadorColocando(draft) {
@@ -363,11 +378,10 @@ function elegibles(draft, squad) {
     const j = JUGADORES_BY_ID[id];
     return j ? j.squad.pais + '|' + j.nombre : null;
   }).filter(Boolean));
-  const eligeBanca = onceCompleto(draft);
   return new Set(squad.jugadores
     .filter(j => !ya.has(j.id)
       && !personas.has(squad.pais + '|' + j.nombre)
-      && (eligeBanca ? cupoBancaDisponible(draft, j) : puestosDisponibles(draft, j).length))
+      && tieneDestinoDisponible(draft, j))
     .map(j => j.id));
 }
 
@@ -445,6 +459,20 @@ function resumenPuestos(jugador, almanaque = false) {
 }
 
 function agregarPick(draft, jugador, puesto, slotIndex) {
+  const slots = slotsFormacion(draft);
+  if (totalElegidos(draft) >= 18 || !Number.isInteger(slotIndex) ||
+      slots[slotIndex] !== puesto || draft.picks.some(p => p.slotIndex === slotIndex)) {
+    throw new Error(`Slot de XI no disponible: ${puesto}`);
+  }
+  const elegidos = idsElegidos(draft);
+  const persona = `${jugador.squad.pais}|${jugador.nombre}`;
+  const personas = new Set([...elegidos].map(id => {
+    const elegido = JUGADORES_BY_ID[id];
+    return elegido ? `${elegido.squad.pais}|${elegido.nombre}` : null;
+  }).filter(Boolean));
+  if (elegidos.has(jugador.id) || personas.has(persona)) {
+    throw new Error(`Jugador repetido: ${jugador.nombre}`);
+  }
   const nivel = nivelEnPuesto(jugador, puesto);
   if (nivel === null) throw new Error(`Puesto no permitido: ${puesto}`);
   const pick = {
@@ -460,6 +488,7 @@ function agregarPick(draft, jugador, puesto, slotIndex) {
 }
 
 function agregarBanca(draft, jugador) {
+  if (totalElegidos(draft) >= 18) throw new Error('El draft ya está completo');
   if (!cupoBancaDisponible(draft, jugador)) {
     throw new Error(`Cupo de banca no disponible: ${jugador.pos}`);
   }
@@ -544,11 +573,15 @@ function dibujarEstado(root, draft) {
 function dibujarPanelIzq(root, draft) {
   const { room } = app.estado;
   const almanaque = nivelesOcultos(room, draft);
-  const eligeBanca = onceCompleto(draft);
   const cuotasBanca = conteoBanca(draft);
   const textoCuotasBanca = Object.entries(CUOTAS_BANCA)
     .map(([categoria, cuota]) => `${categoria} ${cuotasBanca[categoria]}/${cuota}`)
     .join(' · ');
+  const indicadorBanca = draft.enviado ? '' : html`
+    <div class="estado-banca-draft">
+      <h4 class="titulo-pos">BANCA</h4>
+      <p class="nota centrada">${textoCuotasBanca}</p>
+    </div>`;
   const zona = $('#panel-izq', root);
   const scrollLista = $('.lista-elegir', zona)?.scrollTop ?? 0;
   // --- configuración inicial: formación y estilo (solo durante el setup) ---
@@ -585,19 +618,21 @@ function dibujarPanelIzq(root, draft) {
         Al empezar a armar quedan fijos.</p></div>
       <button id="btn-tirar" class="btn-tirar">🎲 EMPEZAR A ARMAR</button>`;
   } else if (!draft.oferta) {
-    sorteo = eligeBanca
-      ? html`
-        <h4 class="titulo-pos">ELIGE TU BANCA</h4>
-        <p class="nota centrada">${textoCuotasBanca}</p>
-        <div class="caja-tirar"><p>Tu XI está completo.<br>Tira para elegir un suplente.</p></div>
-        <button id="btn-tirar" class="btn-tirar">TIRAR 🎲</button>`
-      : html`
-        <div class="caja-tirar"><p>Tira para sortear una<br>selección y un Mundial</p></div>
-        <button id="btn-tirar" class="btn-tirar">TIRAR 🎲</button>`;
+    sorteo = html`
+      <div class="caja-tirar"><p>Tira para seguir armando<br>tu XI y tu banca</p></div>
+      <button id="btn-tirar" class="btn-tirar">TIRAR 🎲</button>`;
   } else {
     const s = draft.oferta;
     const resultadoMundial = RESULTADO_MUNDIAL[s.key];
     const sel = elegibles(draft, s);
+    const seleccionado = jugadorColocando(draft);
+    const tieneXI = seleccionado ? puestosDisponibles(draft, seleccionado).length > 0 : false;
+    const tieneBanca = seleccionado ? cupoBancaDisponible(draft, seleccionado) : false;
+    const instruccionDestino = tieneXI && tieneBanca
+      ? 'Elige una posición verde o naranja del XI, o un cupo disponible de la banca.'
+      : tieneXI
+        ? 'Elige una posición verde o naranja disponible del XI.'
+        : 'Solo tiene disponible un lugar en la banca.';
     const candM = mismoMundial(draft);
     const candP = mismaSeleccion(draft);
     const comodinesRestantes = draft.comodinesOtraSeleccion + draft.comodinesOtroMundial;
@@ -621,19 +656,18 @@ function dibujarPanelIzq(root, draft) {
             ↺ OTRO MUNDIAL · ${draft.comodinesOtroMundial}/${COMODINES_POR_TIPO}</button>
         </div>
       </div>
-      <h4 class="titulo-pos">${eligeBanca ? 'ELIGE TU BANCA' : 'ELIGE UN JUGADOR'}</h4>
-      ${eligeBanca ? `<p class="nota centrada">${textoCuotasBanca}</p>` : ''}
-      ${!eligeBanca && draft.colocando ? html`
+      <h4 class="titulo-pos">${draft.colocando ? 'ELIGE SU DESTINO' : 'ELIGE UN JUGADOR'}</h4>
+      ${draft.colocando ? html`
         <p class="nota jugador-seleccionado">
-          Seleccionado: <b>${esc(jugadorColocando(draft).nombre)}</b>.
-          Elige una posición verde o naranja, o cambia de jugador en la lista.
+          Seleccionado: <b>${esc(seleccionado.nombre)}</b>.
+          ${instruccionDestino} También puedes cambiar de jugador en la lista.
         </p>` : ''}
       <div class="lista-elegir">
         ${s.jugadores.map(j => {
           const resumen = resumenPuestos(j, almanaque);
           return html`<button class="fila-jugador ${draft.colocando?.id === j.id ? 'seleccionado' : ''}" data-id="${j.id}" ${sel.has(j.id) ? '' : 'disabled'}>
             <span class="fj-nombre">${esc(j.nombre)}</span>
-            <span class="fj-pos">${eligeBanca ? `${j.pos} · ` : ''}${resumen.puestos}</span>
+            <span class="fj-pos">${j.pos} · ${resumen.puestos}</span>
             <span class="fj-nivel">${resumen.nivel}</span>
           </button>`;
         }).join('')}
@@ -643,7 +677,7 @@ function dibujarPanelIzq(root, draft) {
           ⏭ Sin jugadores elegibles — pasar gratis</button>`}`;
   }
 
-  zona.innerHTML = sorteo;
+  zona.innerHTML = indicadorBanca + sorteo;
   const nuevaLista = $('.lista-elegir', zona);
   if (nuevaLista) nuevaLista.scrollTop = draft.preservarScrollLista ? scrollLista : 0;
   if (nuevaLista && draft.preservarScrollLista && draft.colocando?.id) {
@@ -676,17 +710,7 @@ function dibujarPanelIzq(root, draft) {
 
   $$('.fila-jugador:not(:disabled)', zona).forEach(b => b.addEventListener('click', () => {
     const j = JUGADORES_BY_ID[b.dataset.id];
-    if (eligeBanca) {
-      agregarBanca(draft, j);
-      draft.oferta = null;
-      draft.preservarScrollLista = false;
-      dibujarEstado(root, draft);
-      const detalleNivel = parseModo(room.modo).modo === 'almanaque' ? '' : ` · media ${j.nivel}`;
-      toast(`Has elegido para la banca a ${j.nombre} · ${j.pos} · ${j.squad.pais} ${j.squad.anio}${detalleNivel}`);
-      return;
-    }
-    const opciones = puestosDisponibles(draft, j);
-    draft.colocando = { id: j.id, puesto: opciones[0].puesto };
+    draft.colocando = { id: j.id };
     draft.preservarScrollLista = true;
     dibujarEstado(root, draft);
   }));
@@ -781,9 +805,17 @@ function dibujarCancha(root, draft) {
 
   $$('.slot-disponible', root).forEach(b => b.addEventListener('click', () => {
     const j = jugadorColocando(draft);
+    if (!j || !draft.oferta) return;
     const puesto = slotsFormacion(draft)[Number(b.dataset.slot)];
-    const pick = agregarPick(draft, j, puesto, Number(b.dataset.slot));
+    let pick;
+    try {
+      pick = agregarPick(draft, j, puesto, Number(b.dataset.slot));
+    } catch (e) {
+      toast('No se pudo colocar al jugador: ' + e.message, true);
+      return;
+    }
     draft.oferta = null;
+    draft.preservarScrollLista = false;
     dibujarEstado(root, draft);
     toast(`Has elegido a ${j.nombre} · ${puesto} · ${j.squad.pais} ${j.squad.anio} · media ${pick.nivel}`);
   }));
@@ -792,7 +824,7 @@ function dibujarCancha(root, draft) {
 function dibujarBox(root, draft) {
   const { room } = app.estado;
   const almanaque = nivelesOcultos(room, draft); // los promedios se revelan al enviar el equipo
-  const ocultarNivelBanca = parseModo(room.modo).modo === 'almanaque';
+  const colocando = jugadorColocando(draft);
 
   const ataque = promSlots(draft.picks.filter(p => ['MED', 'DEL'].includes(p.linea)));
   const defensa = promSlots(draft.picks.filter(p => ['POR', 'DEF'].includes(p.linea)));
@@ -821,13 +853,27 @@ function dibujarBox(root, draft) {
   const filasBanca = SLOTS_BANCA.map(categoria => {
     const suplente = bancaPorCategoria[categoria][indiceCategoria[categoria]++];
     const jugador = suplente ? JUGADORES_BY_ID[suplente.id] : null;
+    const esDestino = !jugador && colocando?.pos === categoria &&
+      cupoBancaDisponible(draft, colocando);
+    const contenido = html`
+      <span class="box-pos">${categoria}</span>
+      <span class="box-nombre">${jugador
+        ? `${bandera(jugador.squad, 12)} ${esc(jugador.nombre)} <i class="ficha-anio">${jugador.squad.anio}</i>`
+        : esDestino
+          ? '<span class="box-vacio banca-destino-texto">COLOCAR AQUÍ</span>'
+          : '<span class="box-vacio">———</span>'}</span>
+      <span class="box-nivel">${jugador ? jugador.nivel : ''}</span>`;
+    if (esDestino) {
+      return html`
+        <button type="button" class="box-fila banca-disponible"
+          data-banca-categoria="${categoria}"
+          aria-label="Colocar a ${esc(colocando.nombre)} en banca ${categoria}">
+          ${contenido}
+        </button>`;
+    }
     return html`
       <div class="box-fila ${jugador ? 'con-jugador' : ''}">
-        <span class="box-pos">${categoria}</span>
-        <span class="box-nombre">${jugador
-          ? `${bandera(jugador.squad, 12)} ${esc(jugador.nombre)} <i class="ficha-anio">${jugador.squad.anio}</i>`
-          : '<span class="box-vacio">———</span>'}</span>
-        <span class="box-nivel">${jugador ? (ocultarNivelBanca ? '?' : jugador.nivel) : ''}</span>
+        ${contenido}
       </div>`;
   }).join('');
   const cuotas = conteoBanca(draft);
@@ -835,7 +881,8 @@ function dibujarBox(root, draft) {
     .map(([categoria, cuota]) => `${categoria} ${cuotas[categoria]}/${cuota}`)
     .join(' · ');
 
-  $('#boxscore', root).innerHTML = html`
+  const caja = $('#boxscore', root);
+  caja.innerHTML = html`
     <div class="boxscore">
       <div class="box-cabecera">
         <span class="box-titulo">BOX SCORE · XI ${totalTitulares(draft)}/11</span>
@@ -852,6 +899,22 @@ function dibujarBox(root, draft) {
       </div>
       ${filasBanca}
     </div>`;
+
+  $$('.banca-disponible', caja).forEach(b => b.addEventListener('click', () => {
+    const jugador = jugadorColocando(draft);
+    if (!jugador || !draft.oferta || b.dataset.bancaCategoria !== jugador.pos ||
+        !cupoBancaDisponible(draft, jugador)) return;
+    try {
+      agregarBanca(draft, jugador);
+    } catch (e) {
+      toast('No se pudo colocar al jugador en banca: ' + e.message, true);
+      return;
+    }
+    draft.oferta = null;
+    draft.preservarScrollLista = false;
+    dibujarEstado(root, draft);
+    toast(`Has elegido para la banca a ${jugador.nombre} · ${jugador.pos} · ${jugador.squad.pais} ${jugador.squad.anio} · media ${jugador.nivel}`);
+  }));
 }
 
 function actualizarRivales(root) {

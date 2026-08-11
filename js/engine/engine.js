@@ -15,29 +15,101 @@ export function parseModo(modoStr) {
 // Un "equipo" del torneo: dueño (humano o IA), plantel base y XI elegido.
 // lineup = { POR: [playerId], DEF: [...], MED: [...], DEL: [...] }
 
-// Formaciones que el plantel puede completar (algunos planteles antiguos
-// tienen pocas opciones en alguna línea)
-export function formacionesDisponibles(squadObj) {
-  const disp = pos => squadObj.jugadores.filter(j => puestosJugador(j).some(p => lineaDePuesto(p.puesto) === pos)).length;
-  return Object.keys(FORMACIONES).filter(f => {
-    const c = FORMACIONES[f];
-    return disp('DEF') >= c.DEF && disp('MED') >= c.MED && disp('DEL') >= c.DEL;
+// La máquina solo utiliza puestos explícitos del jugador. Las conversiones
+// generales están reservadas para el draft/equipos humanos.
+export function nivelEnPuestoMaquina(jugador, puesto) {
+  const posicion = puestosJugador(jugador).find(p => p.puesto === puesto);
+  return posicion ? posicion.nivel : null;
+}
+
+function asignacionPreferidaMaquina(candidata, actual) {
+  if (!actual) return true;
+  for (let i = 0; i < candidata.length; i++) {
+    const idCandidato = candidata[i]?.jugador.id;
+    const idActual = actual[i]?.jugador.id;
+    if (idCandidato === idActual) continue;
+    return idCandidato < idActual;
+  }
+  return false;
+}
+
+// Asignación global ponderada: cada estado representa los slots ya cubiertos.
+// Al procesar cada jugador una sola vez, nunca puede ocupar dos puestos; conservar
+// solo el mejor estado por máscara maximiza la suma total sin una elección greedy.
+function resolverAsignacionMaquina(squadObj, formacion) {
+  const puestos = FORMACION_SLOTS[formacion];
+  if (!puestos || puestos.length !== 11) return null;
+
+  const jugadores = [...squadObj.jugadores]
+    .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const estados = new Map([[0, { total: 0, asignacion: Array(puestos.length).fill(null) }]]);
+
+  for (const jugador of jugadores) {
+    const compatibles = puestos.flatMap((puesto, slotIndex) => {
+      const nivel = nivelEnPuestoMaquina(jugador, puesto);
+      return nivel === null ? [] : [{ slotIndex, nivel }];
+    });
+    if (!compatibles.length) continue;
+
+    // La instantánea impide que las actualizaciones del mismo jugador se vuelvan
+    // a usar en esta iteración para llenar un segundo slot.
+    const anteriores = [...estados.entries()];
+    for (const [mascara, estado] of anteriores) {
+      for (const compatible of compatibles) {
+        const bit = 1 << compatible.slotIndex;
+        if (mascara & bit) continue;
+        const nuevaMascara = mascara | bit;
+        const total = estado.total + compatible.nivel;
+        const existente = estados.get(nuevaMascara);
+        const asignacion = [...estado.asignacion];
+        asignacion[compatible.slotIndex] = { jugador, nivel: compatible.nivel };
+        if (
+          !existente
+          || total > existente.total
+          || (total === existente.total
+            && asignacionPreferidaMaquina(asignacion, existente.asignacion))
+        ) {
+          estados.set(nuevaMascara, { total, asignacion });
+        }
+      }
+    }
+  }
+
+  return estados.get((1 << puestos.length) - 1) || null;
+}
+
+// Una formación de IA solo está disponible si existe un matching exacto de
+// once jugadores distintos con los once puestos explícitos requeridos.
+export function formacionesDisponiblesMaquina(squadObj) {
+  return Object.keys(FORMACIONES)
+    .filter(formacion => resolverAsignacionMaquina(squadObj, formacion) !== null);
+}
+
+export function mejorXIMaquina(squadObj, formacion = '4-3-3') {
+  const solucion = resolverAsignacionMaquina(squadObj, formacion);
+  if (!solucion || solucion.asignacion.length !== 11 || solucion.asignacion.some(a => !a)) {
+    throw new Error(`La IA no puede completar ${formacion} con el plantel ${squadObj.key}.`);
+  }
+
+  const ids = new Set(solucion.asignacion.map(a => a.jugador.id));
+  if (ids.size !== 11) {
+    throw new Error(`El XI de IA para ${squadObj.key} contiene jugadores repetidos.`);
+  }
+
+  const slots = solucion.asignacion.map(({ jugador, nivel }, slotIndex) => {
+    const puesto = FORMACION_SLOTS[formacion][slotIndex];
+    return { puesto, linea: lineaDePuesto(puesto), id: jugador.id, nivel, slotIndex };
   });
+  return lineupDesdeSlots(slots, 'equilibrado', crearBancaIA(squadObj, ids));
+}
+
+// Alias conservados para callers antiguos del motor; la UI humana no los usa.
+export function formacionesDisponibles(squadObj) {
+  return formacionesDisponiblesMaquina(squadObj);
 }
 
 export function mejorXI(squadObj, formacion = '4-3-3') {
-  const slots = [];
-  const usados = new Set();
-  for (const puesto of FORMACION_SLOTS[formacion]) {
-    const mejor = squadObj.jugadores
-      .filter(j => !usados.has(j.id) && nivelEnPuesto(j, puesto) !== null)
-      .map(j => ({ j, nivel: nivelEnPuesto(j, puesto) }))
-      .sort((a, b) => b.nivel - a.nivel)[0];
-    if (!mejor) continue;
-    usados.add(mejor.j.id);
-    slots.push({ puesto, linea: lineaDePuesto(puesto), id: mejor.j.id, nivel: mejor.nivel });
-  }
-  return lineupDesdeSlots(slots, 'equilibrado', crearBancaIA(squadObj, usados));
+  return mejorXIMaquina(squadObj, formacion);
 }
 
 const CUOTAS_BANCA_IA = Object.freeze({ POR: 1, DEF: 2, MED: 2, DEL: 2 });
@@ -182,9 +254,12 @@ function slotsIniciales(equipo) {
     return equipo.lineup.slots.flatMap((slot, slotIndex) => {
       const jugador = JUGADORES_BY_ID[slot.id];
       if (!jugador || !slot.puesto) return [];
-      const nivel = Number.isFinite(slot.nivel)
-        ? slot.nivel
+      const nivelPermitido = equipo.esIA === true
+        ? nivelEnPuestoMaquina(jugador, slot.puesto)
         : nivelEnPuesto(jugador, slot.puesto);
+      const nivel = equipo.esIA === true
+        ? nivelPermitido
+        : Number.isFinite(slot.nivel) ? slot.nivel : nivelPermitido;
       if (nivel === null) return [];
       return [{
         ...slot,
@@ -204,9 +279,13 @@ function slotsIniciales(equipo) {
     const id = equipo.lineup?.[linea]?.[usadosPorLinea[linea]++];
     const jugador = JUGADORES_BY_ID[id];
     if (!jugador) return [];
+    const nivelPosicional = equipo.esIA === true
+      ? nivelEnPuestoMaquina(jugador, puesto)
+      : nivelEnPuesto(jugador, puesto);
+    if (equipo.esIA === true && nivelPosicional === null) return [];
     return [{
       puesto, linea, id,
-      nivel: nivelEnPuesto(jugador, puesto) ?? jugador.nivel,
+      nivel: nivelPosicional ?? jugador.nivel,
       slotIndex,
       titularOriginal: true,
     }];
@@ -228,6 +307,12 @@ function crearEstadoPartido(equipo) {
   return { equipo, slots, bench, usados: new Set(), sustituciones: [] };
 }
 
+function snapshotSlots(estado) {
+  return estado.slots.map(({ puesto, linea, id, nivel, slotIndex }) => ({
+    puesto, linea, id, nivel, slotIndex,
+  }));
+}
+
 function equipoActivo(estado) {
   return {
     ...estado.equipo,
@@ -247,7 +332,9 @@ function candidatosCambio(estado) {
     for (let slotIndex = 0; slotIndex < estado.slots.length; slotIndex++) {
       const slot = estado.slots[slotIndex];
       if (!slot.titularOriginal || slot.puesto === 'POR') continue;
-      const nivel = nivelEnPuesto(jugador, slot.puesto);
+      const nivel = estado.equipo.esIA === true
+        ? nivelEnPuestoMaquina(jugador, slot.puesto)
+        : nivelEnPuesto(jugador, slot.puesto);
       if (nivel !== null) candidatos.push({ suplente, jugador, slot, slotIndex, nivel });
     }
   }
@@ -449,6 +536,8 @@ export function simularPartido(rng, eqA, eqB, conDesempate = false, override = n
     idA: eqA.id, idB: eqB.id,
     goles90A, goles90B, golesA, golesB,
     eventos, sustituciones,
+    slotsFinalesA: snapshotSlots(estadoA),
+    slotsFinalesB: snapshotSlots(estadoB),
     alargue, duracion: alargue ? 120 : 90,
     penales, ganador,
   };
@@ -469,16 +558,19 @@ export function simularMundial(seed, equiposHumanos, overrides = {}, totalDesead
 
   // Rellenar con equipos IA usando planteles no asignados del pool del modo
   const usados = new Set(equiposHumanos.map(e => e.squadKey));
-  const libres = rng.shuffle(poolSquads.filter(s => !usados.has(s.key)));
+  const libres = rng.shuffle(poolSquads
+    .filter(s => !usados.has(s.key))
+    .map(s => ({ squad: s, formaciones: formacionesDisponiblesMaquina(s) }))
+    .filter(candidato => candidato.formaciones.length > 0));
   const equipos = [...equiposHumanos];
   let i = 0;
   while (equipos.length < total) {
-    const s = libres[i++ % libres.length];
-    const candidatas = ['4-3-3', '4-4-2', '3-5-2'].filter(f => formacionesDisponibles(s).includes(f));
-    const formacion = rng.pick(candidatas.length ? candidatas : formacionesDisponibles(s));
+    const { squad: s, formaciones: disponibles } = libres[i++ % libres.length];
+    const candidatas = ['4-3-3', '4-4-2', '3-5-2'].filter(f => disponibles.includes(f));
+    const formacion = rng.pick(candidatas.length ? candidatas : disponibles);
     equipos.push({
       id: 'ia-' + s.key, nombre: null, esIA: true,
-      squadKey: s.key, formacion, lineup: mejorXI(s, formacion),
+      squadKey: s.key, formacion, lineup: mejorXIMaquina(s, formacion),
     });
   }
 

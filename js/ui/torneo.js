@@ -1,5 +1,5 @@
 // El Mundial: simulación determinista que se reproduce con reloj en vivo.
-// Empate en eliminatorias = tanda de penales. Si la tanda es de TU equipo
+// Empate tras el alargue = tanda de penales. Si la tanda es de TU equipo
 // contra la máquina, la juegas tú: eliges lado al patear y al atajar.
 // Si tu equipo queda eliminado, se acaba el juego para ti.
 
@@ -11,15 +11,70 @@ import { simularMundial, parseModo } from '../engine/engine.js';
 import { Rng } from '../engine/rng.js';
 
 // en players.resultados conviven las tandas (clave del partido) y datos
-// internos con prefijo '_' (_paso del anfitrión, _t_<clave> con los lados elegidos)
+// internos con prefijo '_' (_paso/_reproduccion del anfitrión y _t_<clave>
+// con los lados elegidos en una tanda)
 const soloTandas = obj =>
   Object.fromEntries(Object.entries(obj).filter(([k]) => !k.startsWith('_')));
 
+const SUBFASES_REPRODUCCION = Object.freeze({
+  regular: 0,
+  resumen90: 1,
+  extra: 2,
+  resumen120: 3,
+  completo: 4,
+});
+
+const DURACION_90_MS_POR_FASE = Object.freeze({
+  grupos: 10000,
+  r32: 12000,
+  r16: 14000,
+  cuartos: 16000,
+  semifinal: 18000,
+  final: 20000,
+  tercerPuesto: 10000,
+});
+
+const FASE_ANIMACION_POR_RONDA = Object.freeze({
+  'Dieciseisavos de Final': 'r32',
+  'Octavos de Final': 'r16',
+  'Cuartos de Final': 'cuartos',
+  'Semifinales': 'semifinal',
+  'Final': 'final',
+});
+
+function intervaloRelojPorFase(fase) {
+  const duracion90 = DURACION_90_MS_POR_FASE[fase] ?? DURACION_90_MS_POR_FASE.grupos;
+  return duracion90 / 90;
+}
+
 let relojTimer = null;
 let salaHandler = null;
+let resumenRondaOverlay = null;
+
+function cerrarResumenRonda() {
+  if (!resumenRondaOverlay) return;
+  const { appRoot, appEraInerte, manejarTeclado } = resumenRondaOverlay;
+  document.removeEventListener('keydown', manejarTeclado);
+  resumenRondaOverlay.remove();
+  if (appRoot && !appEraInerte) appRoot.inert = false;
+  resumenRondaOverlay = null;
+}
+
+// El SQL de relevo conserva la fila del anfitrión anterior, pero no copia este
+// campo nuevo. Elegir la subfase monotónica más avanzada del paso permite que
+// un anfitrión de reemplazo continúe la pausa sin agregar columnas ni RPCs.
+function subfaseCompartida(players, paso) {
+  return players
+    .map(player => player.resultados?._reproduccion)
+    .filter(rep => Number(rep?.paso) === paso &&
+      Object.hasOwn(SUBFASES_REPRODUCCION, rep?.subfase))
+    .sort((a, b) => SUBFASES_REPRODUCCION[b.subfase] - SUBFASES_REPRODUCCION[a.subfase])[0]
+    ?.subfase || null;
+}
 
 export function pantallaTorneo(root) {
   clearInterval(relojTimer);
+  cerrarResumenRonda();
   if (salaHandler) { document.removeEventListener('sala:cambio', salaHandler); salaHandler = null; }
   const { room, players } = app.estado;
 
@@ -58,19 +113,194 @@ export function pantallaTorneo(root) {
   const hostPaso = () => Math.min(
     Number(app.estado.players.find(p => p.id === room.host_id)?.resultados?._paso ?? 0),
     pasos.length - 1);
+  const pasoGuardado = sessionStorage.getItem(kPaso);
+  const pasoLocal = Number(pasoGuardado);
   let paso = esHost
-    ? Math.min(Number(sessionStorage.getItem(kPaso) || 0), pasos.length - 1)
+    ? Math.min(Math.max(
+      pasoGuardado !== null && Number.isFinite(pasoLocal) ? pasoLocal : 0,
+      hostPaso(),
+    ), pasos.length - 1)
     : hostPaso();
   const miEq = 'h-' + miId();
   const pasoElim = calcularEliminacion(mundial, miEq, pasos);
+  const pasoEsEliminatorio = indice => !soloPenales && Boolean(pasos[indice]?.eliminatorio);
+  const subfaseInicial = () => {
+    if (!pasoEsEliminatorio(paso)) return null;
+    const compartida = subfaseCompartida(app.estado.players, paso);
+    if (compartida) return compartida;
+    const visto = Number(sessionStorage.getItem(kVisto) || -1);
+    return esHost && paso <= visto ? 'completo' : 'regular';
+  };
+  let subfase = subfaseInicial();
+  let colaPublicacion = Promise.resolve(true);
+  let publicandoTransicion = false;
 
-  // el anfitrión publica en qué paso va, para que todos lo sigan
-  const publicarPaso = () => {
+  // Paso y subfase viajan juntos en la fila del anfitrión. Cada escritura parte
+  // del JSON más fresco para conservar tandas, ausentes y metadatos existentes.
+  const publicarCoordinacion = (
+    nuevoPaso,
+    nuevaSubfase,
+    avisarError = true,
+    permitirRetroceso = false,
+  ) => {
+    if (!esHost) return Promise.resolve(false);
+    const tarea = async () => {
+      const yo = app.estado.players.find(pl => pl.id === miId());
+      if (!yo) return false;
+      const actuales = yo.resultados || {};
+      const repActual = actuales._reproduccion;
+      const pasoActual = Number(actuales._paso ?? -1);
+      const rangoActual = Number(repActual?.paso) === nuevoPaso
+        ? (SUBFASES_REPRODUCCION[repActual?.subfase] ?? -1)
+        : -1;
+      const rangoNuevo = SUBFASES_REPRODUCCION[nuevaSubfase] ?? -1;
+      // Las publicaciones automáticas son monotónicas. Solo los botones Prev/Next
+      // pueden solicitar expresamente un paso anterior.
+      if (!permitirRetroceso && (pasoActual > nuevoPaso ||
+          (pasoActual === nuevoPaso && rangoActual > rangoNuevo))) return true;
+      const repCoincide = nuevaSubfase === null
+        || (Number(repActual?.paso) === nuevoPaso && repActual?.subfase === nuevaSubfase);
+      if (pasoActual === nuevoPaso && repCoincide) return true;
+
+      const resultados = { ...actuales, _paso: nuevoPaso };
+      if (nuevaSubfase !== null) {
+        resultados._reproduccion = { paso: nuevoPaso, subfase: nuevaSubfase };
+      }
+      try {
+        await net.actualizarJugador(room.code, miId(), { resultados });
+        const actualizado = app.estado.players.find(pl => pl.id === miId());
+        if (actualizado) {
+          const trasRespuesta = actualizado.resultados || {};
+          const pasoTrasRespuesta = Number(trasRespuesta._paso ?? -1);
+          const repTrasRespuesta = trasRespuesta._reproduccion;
+          const rangoTrasRespuesta = Number(repTrasRespuesta?.paso) === nuevoPaso
+            ? (SUBFASES_REPRODUCCION[repTrasRespuesta?.subfase] ?? -1)
+            : -1;
+          const conservarAvanceRemoto = !permitirRetroceso &&
+            (pasoTrasRespuesta > nuevoPaso ||
+              (pasoTrasRespuesta === nuevoPaso && rangoTrasRespuesta > rangoNuevo));
+          if (!conservarAvanceRemoto) {
+            actualizado.resultados = {
+              ...trasRespuesta,
+              _paso: nuevoPaso,
+              ...(nuevaSubfase === null
+                ? {}
+                : { _reproduccion: { paso: nuevoPaso, subfase: nuevaSubfase } }),
+            };
+          }
+        }
+        return true;
+      } catch (e) {
+        if (avisarError) toast('No se pudo sincronizar la reproducción: ' + e.message, true);
+        return false;
+      }
+    };
+    colaPublicacion = colaPublicacion.then(tarea, tarea);
+    return colaPublicacion;
+  };
+
+  const adoptarAvanceCompartido = () => {
+    const nuevoPaso = hostPaso();
+    if (nuevoPaso > paso) {
+      paso = nuevoPaso;
+      subfase = pasoEsEliminatorio(nuevoPaso)
+        ? (subfaseCompartida(app.estado.players, nuevoPaso) || 'regular')
+        : null;
+      return true;
+    }
+    if (nuevoPaso !== paso || !pasoEsEliminatorio(paso)) return false;
+    const compartida = subfaseCompartida(app.estado.players, paso);
+    const rangoCompartido = SUBFASES_REPRODUCCION[compartida] ?? -1;
+    const rangoLocal = SUBFASES_REPRODUCCION[subfase] ?? -1;
+    if (rangoCompartido <= rangoLocal) return false;
+    subfase = compartida;
+    return true;
+  };
+
+  const asegurarCoordinacion = () => {
     if (!esHost) return;
-    const yo = app.estado.players.find(pl => pl.id === miId());
-    if (!yo || (yo.resultados || {})._paso === paso) return;
-    yo.resultados = { ...(yo.resultados || {}), _paso: paso };
-    net.actualizarJugador(room.code, miId(), { resultados: yo.resultados }).catch(() => {});
+    publicarCoordinacion(paso, pasoEsEliminatorio(paso) ? subfase : null, false)
+      .then(ok => {
+        if (ok && !publicandoTransicion && adoptarAvanceCompartido()) dibujar();
+      });
+  };
+
+  // La gestión de ausentes escribe el mismo JSON `resultados`; compartir la
+  // cola evita que una marca de ausencia y una frontera 90/120 se pisen.
+  const actualizarAusente = (playerId, ausente) => {
+    if (!esHost) return Promise.resolve(false);
+    const tarea = async () => {
+      const host = app.estado.players.find(pl => pl.id === miId());
+      if (!host) return false;
+      const abandonadosActuales = new Set(host.resultados?._abandonados || []);
+      if (ausente) abandonadosActuales.add(playerId);
+      else abandonadosActuales.delete(playerId);
+      const resultados = {
+        ...(host.resultados || {}),
+        _abandonados: [...abandonadosActuales],
+      };
+      try {
+        await net.actualizarJugador(room.code, miId(), { resultados });
+        const actualizado = app.estado.players.find(pl => pl.id === miId());
+        if (actualizado) {
+          actualizado.resultados = {
+            ...(actualizado.resultados || {}),
+            _abandonados: resultados._abandonados,
+          };
+        }
+        if (!publicandoTransicion && adoptarAvanceCompartido()) dibujar();
+        return true;
+      } catch (e) {
+        toast('No se pudo actualizar: ' + e.message, true);
+        return false;
+      }
+    };
+    colaPublicacion = colaPublicacion.then(tarea, tarea);
+    return colaPublicacion;
+  };
+
+  const cambiarSubfase = async nuevaSubfase => {
+    if (!esHost || publicandoTransicion || !pasoEsEliminatorio(paso)) return false;
+    publicandoTransicion = true;
+    const ok = await publicarCoordinacion(paso, nuevaSubfase);
+    publicandoTransicion = false;
+    if (!ok) return false;
+    if (adoptarAvanceCompartido()) {
+      dibujar();
+      return true;
+    }
+    subfase = nuevaSubfase;
+    if (subfase === 'completo') sessionStorage.setItem(kVisto, paso);
+    dibujar();
+    return true;
+  };
+
+  const cambiarPaso = async nuevoPaso => {
+    if (!esHost || publicandoTransicion || nuevoPaso < 0 || nuevoPaso >= pasos.length) return false;
+    publicandoTransicion = true;
+    const visto = Number(sessionStorage.getItem(kVisto) || -1);
+    const compartida = pasoEsEliminatorio(nuevoPaso)
+      ? subfaseCompartida(app.estado.players, nuevoPaso)
+      : null;
+    const nuevaSubfase = pasoEsEliminatorio(nuevoPaso)
+      ? (compartida || (nuevoPaso <= visto ? 'completo' : 'regular'))
+      : null;
+    const ok = await publicarCoordinacion(
+      nuevoPaso,
+      nuevaSubfase,
+      true,
+      nuevoPaso < paso,
+    );
+    publicandoTransicion = false;
+    if (!ok) return false;
+    if (adoptarAvanceCompartido()) {
+      dibujar();
+      return true;
+    }
+    paso = nuevoPaso;
+    subfase = nuevaSubfase;
+    dibujar();
+    return true;
   };
 
   // cambios que llegan por la sala: tandas nuevas re-simulan; el paso del
@@ -81,7 +311,30 @@ export function pantallaTorneo(root) {
     const nuevosAband = (app.estado.players.find(p => p.id === room.host_id)?.resultados?._abandonados) || [];
     if (JSON.stringify(nuevas) !== JSON.stringify(overrides) ||
         JSON.stringify(nuevosAband) !== JSON.stringify(abandonados)) { pantallaTorneo(root); return; }
-    if (!esHost && hostPaso() !== paso) { paso = hostPaso(); dibujar(); }
+    const nuevoPaso = hostPaso();
+    if (esHost) {
+      // Tras un relevo, la actualización de la fila heredada puede llegar un
+      // instante después del cambio de room.host_id. Nunca hacemos rollback:
+      // solo adoptamos paso o subfase compartida estrictamente más avanzados.
+      if (!publicandoTransicion && adoptarAvanceCompartido()) {
+        dibujar();
+        return;
+      }
+    } else {
+      const pasoCambio = nuevoPaso !== paso;
+      const nuevaCompartida = pasoEsEliminatorio(nuevoPaso)
+        ? subfaseCompartida(app.estado.players, nuevoPaso)
+        : null;
+      const nuevaSubfase = pasoEsEliminatorio(nuevoPaso)
+        ? (nuevaCompartida || (pasoCambio ? 'regular' : subfase))
+        : null;
+      if (pasoCambio || nuevaSubfase !== subfase) {
+        paso = nuevoPaso;
+        subfase = nuevaSubfase;
+        dibujar();
+        return;
+      }
+    }
     // marcador de penales en vivo para los espectadores (sin re-simular)
     const liveEl = document.getElementById('live-penales');
     if (liveEl) {
@@ -92,22 +345,41 @@ export function pantallaTorneo(root) {
   document.addEventListener('sala:cambio', salaHandler);
   app.limpiezaPantalla = () => {
     clearInterval(relojTimer);
+    cerrarResumenRonda();
+    document.querySelector('.overlay-gestion')?.remove();
     if (salaHandler) { document.removeEventListener('sala:cambio', salaHandler); salaHandler = null; }
   };
 
   const dibujar = () => {
     clearInterval(relojTimer);
+    cerrarResumenRonda();
+    document.querySelector('.overlay-gestion')?.remove();
     sessionStorage.setItem(kPaso, paso);
-    publicarPaso();
+    asegurarCoordinacion();
     const visto = Number(sessionStorage.getItem(kVisto) || -1);
     // Una vez notificada su eliminación, el DT queda como espectador hasta que
     // aparezca el campeón. Antes de la notificación no ocultamos nada para no
     // adelantar visualmente el resultado de un partido que aún está en vivo.
     const espectadorForzado = Boolean(sessionStorage.getItem(kElim)) && paso < pasos.length - 1;
-    // en "solo penales" no hay partido que animar: se va directo al resultado/tanda
-    const enVivo = !soloPenales && paso > visto && Boolean(pasos[paso].partidos);
-    // tanda sin resolver en este paso: bloquea el avance
-    const pend = enVivo ? null : (pasos[paso].partidos || []).find(p => p.pendiente);
+    const esEliminatoria = pasoEsEliminatorio(paso);
+    const enPausa = esEliminatoria && (subfase === 'resumen90' || subfase === 'resumen120');
+    const enVivoEliminatoria = esEliminatoria && (subfase === 'regular' || subfase === 'extra');
+    // Grupos conservan su camino histórico; Solo Penales sigue sin reloj.
+    const enVivoComun = !esEliminatoria && !soloPenales && paso > visto && Boolean(pasos[paso].partidos);
+    const enVivo = enVivoEliminatoria || enVivoComun;
+    const completo = !esEliminatoria || subfase === 'completo';
+    // Tandas, eliminación y resultado final permanecen bloqueados durante ambas pausas.
+    const pend = completo && !enVivo
+      ? (pasos[paso].partidos || []).find(p => p.pendiente)
+      : null;
+    const mostrarFinal = completo && !enVivo;
+    const mostrarReloj = enVivo || enPausa;
+    const minutoInicial = subfase === 'resumen120' ? 120
+      : esEliminatoria && (subfase === 'extra' || subfase === 'resumen90') ? 90
+      : 0;
+    const etiquetaReloj = enPausa ? 'PAUSA'
+      : esEliminatoria && subfase === 'extra' ? 'ALARGUE'
+      : 'EN JUEGO';
 
     render(root, html`
       <div class="torneo">
@@ -116,11 +388,13 @@ export function pantallaTorneo(root) {
           <div class="ticket"><span class="ticket-label">MUNDIALITO</span>
             <span class="ticket-codigo">${esc(room.code)}</span></div>
           <div class="controles-torneo">
-            ${esHost ? '<button id="btn-jugadores" class="btn btn-mini">👥 Jugadores</button>' : ''}
+            ${esHost && !enVivo && !enPausa
+              ? '<button id="btn-jugadores" class="btn btn-mini">👥 Jugadores</button>'
+              : ''}
             ${esHost
               ? (enVivo
                 ? '<button id="btn-skip" class="btn btn-mini">⏩ Al pitazo final</button>'
-                : html`
+                : enPausa ? '' : html`
                   <button id="btn-prev" class="btn btn-mini" ${paso === 0 ? 'disabled' : ''}>◀</button>
                   <button id="btn-sig" class="btn btn-primario" ${paso >= pasos.length - 1 || pend ? 'disabled' : ''}>
                     Siguiente ▶</button>`)
@@ -128,8 +402,8 @@ export function pantallaTorneo(root) {
           </div>
         </header>
         <div class="contenido-torneo">
-          ${enVivo ? '<div class="reloj-vivo"><span id="reloj">0\'</span><span class="reloj-label">EN JUEGO</span></div>' : ''}
-          ${pasos[paso].render(mundial, !enVivo)}
+          ${mostrarReloj ? `<div class="reloj-vivo"><span id="reloj">${minutoInicial}'</span><span class="reloj-label">${etiquetaReloj}</span></div>` : ''}
+          ${pasos[paso].render(mundial, mostrarFinal)}
           ${pend && !pend.pendiente.includes(miEq) ? html`
             <div class="nota centrada esperando penales-espectador">
               <span>🧤 ${esc(nombresPendientes(mundial, pend))} definiendo en penales…</span>
@@ -144,20 +418,77 @@ export function pantallaTorneo(root) {
     `);
 
     $('#btn-salir', root)?.addEventListener('click', () => { clearInterval(relojTimer); salirDeSala(); });
-    $('#btn-jugadores', root)?.addEventListener('click', () => abrirGestionJugadores(room));
+    $('#btn-jugadores', root)?.addEventListener('click', () =>
+      abrirGestionJugadores(room, actualizarAusente));
 
-    if (enVivo) {
+    if (enVivoEliminatoria) {
+      const limite = subfase === 'extra' ? 120 : 90;
+      const siguienteSubfase = subfase === 'extra' ? 'resumen120' : 'resumen90';
+      let finalizando = false;
+      const terminarTramo = async () => {
+        if (finalizando) return;
+        clearInterval(relojTimer);
+        pintarPartidosHasta(root, pasos[paso].partidos, limite);
+        if (!esHost) {
+          const label = $('.reloj-label', root);
+          if (label) label.textContent = 'ESPERANDO AL ANFITRIÓN';
+          return;
+        }
+        finalizando = true;
+        const boton = $('#btn-skip', root);
+        if (boton) { boton.disabled = true; boton.textContent = 'Sincronizando…'; }
+        const ok = await cambiarSubfase(siguienteSubfase);
+        if (!ok) {
+          finalizando = false;
+          if (boton?.isConnected) { boton.disabled = false; boton.textContent = '↻ Reintentar resumen'; }
+        }
+      };
+      $('#btn-skip', root)?.addEventListener('click', terminarTramo);
+      animarPartidos(
+        root,
+        pasos[paso].partidos,
+        subfase === 'extra' ? 90 : 0,
+        limite,
+        terminarTramo,
+        pasos[paso].faseAnimacion,
+      );
+    } else if (enVivoComun) {
       const terminar = () => {
         clearInterval(relojTimer);
         sessionStorage.setItem(kVisto, paso);
         dibujar();
       };
-      $('#btn-skip', root)?.addEventListener('click', terminar);
-      animarPartidos(root, pasos[paso].partidos, terminar);
+      $('#btn-skip', root)?.addEventListener('click', () => {
+        pintarPartidosHasta(root, pasos[paso].partidos, 90);
+        terminar();
+      });
+      animarPartidos(
+        root,
+        pasos[paso].partidos,
+        0,
+        90,
+        terminar,
+        pasos[paso].faseAnimacion,
+      );
+    } else if (enPausa) {
+      const minuto = subfase === 'resumen90' ? 90 : 120;
+      pintarPartidosHasta(root, pasos[paso].partidos, minuto);
+      abrirResumenRonda({
+        mundial,
+        partidos: pasos[paso].partidos,
+        tituloPaso: pasos[paso].titulo,
+        subfase,
+        esHost,
+        alContinuar: async () => {
+          const hayAlargue = pasos[paso].partidos.some(p => p.alargue);
+          return cambiarSubfase(subfase === 'resumen90' && hayAlargue ? 'extra' : 'completo');
+        },
+      });
     } else {
-      if (paso > visto) sessionStorage.setItem(kVisto, paso);
-      $('#btn-sig', root)?.addEventListener('click', () => { paso++; dibujar(); });
-      $('#btn-prev', root)?.addEventListener('click', () => { paso--; dibujar(); });
+      if (esEliminatoria) sessionStorage.setItem(kVisto, paso);
+      else if (paso > visto) sessionStorage.setItem(kVisto, paso);
+      $('#btn-sig', root)?.addEventListener('click', () => cambiarPaso(paso + 1));
+      $('#btn-prev', root)?.addEventListener('click', () => cambiarPaso(paso - 1));
       if (pend && pend.pendiente.includes(miEq)) {
         // ¡me toca jugar la tanda!
         abrirTanda(root, mundial, pend, room);
@@ -201,7 +532,7 @@ function marcarPendientes(mundial, abandonados = []) {
 // modal del anfitrión: lista todos los jugadores y permite marcar/reactivar ausentes.
 // "ausente" = cerró la app; la máquina juega sus penales y el Mundial no se tranca.
 // La lista de ausentes vive en la fila del anfitrión (resultados._abandonados).
-function abrirGestionJugadores(room) {
+function abrirGestionJugadores(room, actualizarAusente) {
   if (document.querySelector('.overlay-gestion')) return;
   const div = document.createElement('div');
   div.className = 'overlay-gestion';
@@ -209,14 +540,8 @@ function abrirGestionJugadores(room) {
   const cerrar = () => div.remove();
 
   const toggle = async (pid, ausente) => {
-    const host = app.estado.players.find(p => p.id === room.host_id);
-    const actual = new Set(host?.resultados?._abandonados || []);
-    if (ausente) actual.add(pid); else actual.delete(pid);
-    const resultados = { ...(host?.resultados || {}), _abandonados: [...actual] };
-    if (host) host.resultados = resultados; // optimista, para repintar al tiro
-    try { await net.actualizarJugador(room.code, room.host_id, { resultados }); }
-    catch (e) { toast('No se pudo actualizar: ' + e.message, true); }
-    pintar();
+    const ok = await actualizarAusente(pid, ausente);
+    if (ok && div.isConnected) pintar();
   };
 
   function pintar() {
@@ -276,43 +601,48 @@ function textoLivePenales(mundial, partido) {
 
 // ---------- reloj en vivo ----------
 
-function animarPartidos(root, partidos, alTerminar) {
-  // En una fecha pueden convivir partidos de 90' y 120'. El reloj de la
-  // pantalla acompaña al más largo, pero cada tarjeta deja de incorporar
-  // eventos cuando alcanza su propia duración.
-  const maxMin = Math.max(90, ...partidos.map(duracionPartido));
-  let minuto = 0;
+function pintarPartidosHasta(root, partidos, minuto) {
   const reloj = $('#reloj', root);
+  if (reloj) reloj.textContent = minuto + "'";
+  for (let i = 0; i < partidos.length; i++) {
+    const p = partidos[i];
+    const cont = $(`[data-partido="${i}"]`, root);
+    if (!cont) continue;
+    const minutoPartido = Math.min(minuto, duracionPartido(p));
+    const golesVisibles = (p.eventos || []).filter(e => e.minuto <= minutoPartido);
+    const ga = golesVisibles.filter(e => e.equipoId === p.idA).length;
+    const gb = golesVisibles.filter(e => e.equipoId === p.idB).length;
+    const marcador = $('.resultado', cont);
+    const nuevo = `${ga} – ${gb}`;
+    if (marcador && marcador.textContent.trim() !== nuevo.trim()) {
+      marcador.textContent = nuevo;
+      cont.classList.remove('gol-flash');
+      void cont.offsetWidth; // reinicia la animación
+      cont.classList.add('gol-flash');
+    }
+    const timeline = $('.timeline-partido', cont);
+    if (timeline) timeline.innerHTML = timelinePartidoHTML(p, minutoPartido);
 
+    const estado = $('.estado-partido', cont);
+    if (estado && p.alargue && minutoPartido >= 90) {
+      estado.innerHTML = etiquetaAlargueHTML(p, minutoPartido < 120);
+    }
+  }
+}
+
+function animarPartidos(root, partidos, desdeMin, hastaMin, alTerminar, faseAnimacion = 'grupos') {
+  // En eliminación directa, cada tramo se detiene en su frontera para que el
+  // resumen del host habilite explícitamente 91–120 o las tandas.
+  let minuto = desdeMin;
+  pintarPartidosHasta(root, partidos, minuto);
   relojTimer = setInterval(() => {
     minuto++;
-    if (reloj) reloj.textContent = minuto + "'";
-    for (let i = 0; i < partidos.length; i++) {
-      const p = partidos[i];
-      const cont = $(`[data-partido="${i}"]`, root);
-      if (!cont) continue;
-      const minutoPartido = Math.min(minuto, duracionPartido(p));
-      const golesVisibles = (p.eventos || []).filter(e => e.minuto <= minutoPartido);
-      const ga = golesVisibles.filter(e => e.equipoId === p.idA).length;
-      const gb = golesVisibles.filter(e => e.equipoId === p.idB).length;
-      const marcador = $('.resultado', cont);
-      const nuevo = `${ga} – ${gb}`;
-      if (marcador.textContent.trim() !== nuevo.trim()) {
-        marcador.textContent = nuevo;
-        cont.classList.remove('gol-flash');
-        void cont.offsetWidth; // reinicia la animación
-        cont.classList.add('gol-flash');
-      }
-      const timeline = $('.timeline-partido', cont);
-      if (timeline) timeline.innerHTML = timelinePartidoHTML(p, minutoPartido);
-
-      const estado = $('.estado-partido', cont);
-      if (estado && p.alargue && minutoPartido >= 90) {
-        estado.innerHTML = etiquetaAlargueHTML(p, minutoPartido < 120);
-      }
+    pintarPartidosHasta(root, partidos, minuto);
+    if (minuto >= hastaMin) {
+      clearInterval(relojTimer);
+      alTerminar();
     }
-    if (minuto >= maxMin) alTerminar();
-  }, 120);
+  }, intervaloRelojPorFase(faseAnimacion));
 }
 
 // ---------- helpers de presentación ----------
@@ -391,6 +721,158 @@ function esMio(mundial, id) {
 function miPrimero(mundial, partidos) {
   const mio = p => (esMio(mundial, p.idA) || esMio(mundial, p.idB)) ? 1 : 0;
   return [...partidos].sort((a, b) => mio(b) - mio(a));
+}
+
+function desenlaceResumenHTML(mundial, p, tituloPaso, golesA, golesB) {
+  const ganadorId = golesA > golesB ? p.idA : p.idB;
+  const perdedorId = ganadorId === p.idA ? p.idB : p.idA;
+  const ganador = esc(nombrePlano(mundial, ganadorId));
+  const perdedor = esc(nombrePlano(mundial, perdedorId));
+  if (tituloPaso === 'Final') {
+    return `<span class="resumen-avanza">🏆 ${ganador} gana la Final</span>` +
+      `<span class="resumen-eliminado">✕ ${perdedor} termina subcampeón</span>`;
+  }
+  if (tituloPaso === 'Tercer Puesto') {
+    return `<span class="resumen-avanza">✓ ${ganador} gana el Tercer Puesto</span>` +
+      `<span class="resumen-eliminado">✕ ${perdedor} termina cuarto</span>`;
+  }
+  if (tituloPaso === 'Semifinales') {
+    return `<span class="resumen-avanza">✓ ${ganador} avanza a la Final</span>` +
+      `<span class="resumen-eliminado">✕ ${perdedor} queda fuera de la Final</span>`;
+  }
+  return `<span class="resumen-avanza">✓ ${ganador} avanza</span>` +
+    `<span class="resumen-eliminado">✕ ${perdedor} queda eliminado</span>`;
+}
+
+function marcadorResumenHTML(mundial, p, golesA, golesB) {
+  return `<div class="resumen-marcador">` +
+    `<span class="resumen-equipo">${nombreEquipo(mundial, p.idA)}</span>` +
+    `<strong>${golesA} – ${golesB}</strong>` +
+    `<span class="resumen-equipo der">${nombreEquipo(mundial, p.idB)}</span>` +
+    `</div>`;
+}
+
+function partidoDefinidoResumenHTML(mundial, p, tituloPaso, golesA, golesB, aet = false) {
+  const mio = esMio(mundial, p.idA) || esMio(mundial, p.idB) ? 'mi-partido' : '';
+  return `<article class="resumen-partido definido ${mio}">` +
+    marcadorResumenHTML(mundial, p, golesA, golesB) +
+    `<div class="resumen-mensajes">${aet ? '<small class="resumen-aet">AET · tras alargue</small>' : ''}` +
+    desenlaceResumenHTML(mundial, p, tituloPaso, golesA, golesB) +
+    `</div></article>`;
+}
+
+function partidoPendienteResumenHTML(mundial, p, golesA, golesB, penales = false) {
+  const mio = esMio(mundial, p.idA) || esMio(mundial, p.idB) ? 'mi-partido' : '';
+  return `<article class="resumen-partido pendiente ${mio}">` +
+    marcadorResumenHTML(mundial, p, golesA, golesB) +
+    `<div class="resumen-mensajes"><span>${penales
+      ? '🧤 La clasificación se decidirá desde los doce pasos'
+      : '→ Se jugarán 30 minutos adicionales'}</span></div></article>`;
+}
+
+function seccionResumenHTML(titulo, clase, partidosHTML) {
+  if (!partidosHTML.length) return '';
+  return `<section class="resumen-seccion ${clase}"><h3>${titulo}</h3>` +
+    `<div class="resumen-partidos">${partidosHTML.join('')}</div></section>`;
+}
+
+function contenidoResumen90(mundial, partidos, tituloPaso) {
+  // Esta vista solo consulta goles90*: nunca ganador, marcador de alargue ni tanda.
+  const finalizados = partidos
+    .filter(p => p.goles90A !== p.goles90B)
+    .map(p => partidoDefinidoResumenHTML(mundial, p, tituloPaso, p.goles90A, p.goles90B));
+  const alargues = partidos
+    .filter(p => p.alargue === true)
+    .map(p => partidoPendienteResumenHTML(mundial, p, p.goles90A, p.goles90B));
+  return {
+    titulo: "⏱ FIN DE LOS 90'",
+    subtitulo: alargues.length
+      ? 'Así queda la ronda después del tiempo reglamentario'
+      : 'Todos los partidos de la ronda quedaron definidos',
+    cuerpo: seccionResumenHTML('PARTIDOS FINALIZADOS', 'finalizados', finalizados) +
+      seccionResumenHTML('VAN A ALARGUE', 'alargues', alargues),
+    boton: alargues.length ? '▶ CONTINUAR AL ALARGUE' : 'CONTINUAR ▶',
+  };
+}
+
+function contenidoResumen120(mundial, partidos, tituloPaso) {
+  const alargues = partidos.filter(p => p.alargue === true);
+  // En empates solo se consultan golesA/B. penales y ganador quedan fuera del DOM.
+  const definidos = alargues
+    .filter(p => p.golesA !== p.golesB)
+    .map(p => partidoDefinidoResumenHTML(mundial, p, tituloPaso, p.golesA, p.golesB, true));
+  const penales = alargues
+    .filter(p => p.golesA === p.golesB)
+    .map(p => partidoPendienteResumenHTML(mundial, p, p.golesA, p.golesB, true));
+  return {
+    titulo: "⏱ FIN DE LOS 120'",
+    subtitulo: 'Así terminó el tiempo extra',
+    cuerpo: seccionResumenHTML('DEFINIDOS EN EL ALARGUE', 'definidos-extra', definidos) +
+      seccionResumenHTML('VAN A PENALES', 'van-penales', penales),
+    boton: penales.length ? '🧤 IR A PENALES' : 'CONTINUAR ▶',
+  };
+}
+
+function abrirResumenRonda({ mundial, partidos, tituloPaso, subfase, esHost, alContinuar }) {
+  cerrarResumenRonda();
+  const contenido = subfase === 'resumen90'
+    ? contenidoResumen90(mundial, partidos, tituloPaso)
+    : contenidoResumen120(mundial, partidos, tituloPaso);
+  const div = document.createElement('div');
+  div.className = 'overlay-resumen-ronda';
+  div.dataset.subfase = subfase;
+  div.innerHTML = html`
+    <section class="resumen-ronda" role="dialog" aria-modal="true"
+        aria-labelledby="resumen-titulo" aria-describedby="resumen-subtitulo" tabindex="-1">
+      <header class="resumen-ronda-cabecera">
+        <p class="resumen-sello">${esc(tituloPaso)}</p>
+        <h2 id="resumen-titulo">${contenido.titulo}</h2>
+        <p id="resumen-subtitulo">${contenido.subtitulo}</p>
+      </header>
+      <div class="resumen-ronda-cuerpo">${contenido.cuerpo}</div>
+      <footer class="resumen-ronda-pie">
+        ${esHost
+          ? `<button id="resumen-continuar" class="btn btn-primario">${contenido.boton}</button>`
+          : '<p class="resumen-espera" role="status" tabindex="0">Esperando al anfitrión…</p>'}
+      </footer>
+    </section>`;
+
+  const appRoot = document.getElementById('app');
+  const appEraInerte = appRoot?.hasAttribute('inert') ?? false;
+  const dialogo = $('.resumen-ronda', div);
+  const manejarTeclado = e => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+    const foco = $('#resumen-continuar', div) || $('.resumen-espera', div) || dialogo;
+    e.preventDefault();
+    foco?.focus();
+  };
+  div.appRoot = appRoot;
+  div.appEraInerte = appEraInerte;
+  div.manejarTeclado = manejarTeclado;
+  if (appRoot) appRoot.inert = true;
+  document.body.appendChild(div);
+  document.addEventListener('keydown', manejarTeclado);
+  resumenRondaOverlay = div;
+
+  const boton = $('#resumen-continuar', div);
+  boton?.addEventListener('click', async () => {
+    if (boton.disabled) return;
+    const texto = boton.textContent;
+    boton.disabled = true;
+    dialogo.setAttribute('aria-busy', 'true');
+    boton.textContent = 'Sincronizando…';
+    const ok = await alContinuar();
+    if (!ok && boton.isConnected) {
+      boton.disabled = false;
+      boton.textContent = texto;
+      dialogo.removeAttribute('aria-busy');
+    }
+  });
+  (boton || $('.resumen-espera', div) || dialogo)?.focus();
 }
 
 function partidoHTML(mundial, p, idx, final) {
@@ -479,9 +961,30 @@ function abrirTanda(root, mundial, partido, room) {
 
   const nivelLineup = (eq, id) => eq.lineup.slots?.find(s => s.id === id)?.nivel ?? JUGADORES_BY_ID[id]?.nivel ?? 70;
   const conNivelLineup = eq => id => ({ ...JUGADORES_BY_ID[id], nivel: nivelLineup(eq, id) });
-  const pateadores = eq => [...eq.lineup.DEF, ...eq.lineup.MED, ...eq.lineup.DEL]
-    .map(conNivelLineup(eq)).sort((a, b) => b.nivel - a.nivel);
-  const patA = pateadores(eqA), patB = pateadores(eqB);
+  const ordenarPateadores = jugadores => jugadores
+    .sort((a, b) => b.nivel - a.nivel || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  const pateadoresDesdeSlots = slots => ordenarPateadores(slots
+    .filter(slot => slot?.puesto !== 'POR' && slot?.linea !== 'POR')
+    .flatMap(slot => {
+      const jugador = JUGADORES_BY_ID[slot.id];
+      return jugador && Number.isFinite(slot.nivel)
+        ? [{ ...jugador, nivel: slot.nivel }]
+        : [];
+    }));
+  const pateadoresOriginales = eq => {
+    if (Array.isArray(eq.lineup?.slots)) return pateadoresDesdeSlots(eq.lineup.slots);
+    return ordenarPateadores([
+      ...(eq.lineup?.DEF || []),
+      ...(eq.lineup?.MED || []),
+      ...(eq.lineup?.DEL || []),
+    ].map(conNivelLineup(eq)).filter(jugador => jugador.id));
+  };
+  const pateadoresPartido = (eq, slotsFinales) => {
+    const finales = Array.isArray(slotsFinales) ? pateadoresDesdeSlots(slotsFinales) : [];
+    return finales.length ? finales : pateadoresOriginales(eq);
+  };
+  const patA = pateadoresPartido(eqA, partido.slotsFinalesA);
+  const patB = pateadoresPartido(eqB, partido.slotsFinalesB);
   const gkA = conNivelLineup(eqA)(eqA.lineup.POR[0]);
   const gkB = conNivelLineup(eqB)(eqB.lineup.POR[0]);
 
@@ -788,6 +1291,7 @@ function construirPasos(mundial) {
     const ordenados = miPrimero(mundial, fecha.partidos);
     pasos.push({
       titulo: fecha.nombre,
+      faseAnimacion: 'grupos',
       partidos: ordenados,
       render: (m, final) => html`
         <h2 class="titulo-fase">Fase de grupos · ${esc(fecha.nombre)}</h2>
@@ -810,6 +1314,8 @@ function construirPasos(mundial) {
     const esFinal = ronda.nombre === 'Final';
     pasos.push({
       titulo: ronda.nombre,
+      eliminatorio: true,
+      faseAnimacion: FASE_ANIMACION_POR_RONDA[ronda.nombre] || 'grupos',
       partidos: ordenados,
       render: (m, final) => esFinal
         ? html`
@@ -834,6 +1340,8 @@ function construirPasos(mundial) {
     if (ronda.nombre === 'Semifinales' && mundial.tercerPuesto) {
       pasos.push({
         titulo: 'Tercer Puesto',
+        eliminatorio: true,
+        faseAnimacion: 'tercerPuesto',
         partidos: [mundial.tercerPuesto],
         render: (m, final) => html`
           <h2 class="titulo-fase">Partido por el Tercer Puesto</h2>

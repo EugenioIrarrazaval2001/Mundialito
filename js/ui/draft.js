@@ -445,7 +445,15 @@ function promSlots(slots) {
 }
 
 function resumenPuestos(jugador, almanaque = false) {
-  const puestos = puestosJugador(jugador);
+  const puestosUnicos = new Map();
+  for (const posicion of puestosJugador(jugador)) {
+    const anterior = puestosUnicos.get(posicion.puesto);
+    if (anterior && anterior.nivel !== posicion.nivel) {
+      console.warn(`Posición duplicada con niveles distintos para ${jugador.id}: ${posicion.puesto}`);
+    }
+    if (!anterior || posicion.nivel > anterior.nivel) puestosUnicos.set(posicion.puesto, posicion);
+  }
+  const puestos = [...puestosUnicos.values()];
   const max = Math.max(...puestos.map(p => p.nivel));
   const min = Math.min(...puestos.map(p => p.nivel));
   return {
@@ -455,6 +463,7 @@ function resumenPuestos(jugador, almanaque = false) {
     }).join('/'),
     nivel: almanaque ? '?' : max,
     min,
+    incluyeCategoria: puestos.some(p => p.puesto === jugador.pos),
   };
 }
 
@@ -573,15 +582,6 @@ function dibujarEstado(root, draft) {
 function dibujarPanelIzq(root, draft) {
   const { room } = app.estado;
   const almanaque = nivelesOcultos(room, draft);
-  const cuotasBanca = conteoBanca(draft);
-  const textoCuotasBanca = Object.entries(CUOTAS_BANCA)
-    .map(([categoria, cuota]) => `${categoria} ${cuotasBanca[categoria]}/${cuota}`)
-    .join(' · ');
-  const indicadorBanca = draft.enviado ? '' : html`
-    <div class="estado-banca-draft">
-      <h4 class="titulo-pos">BANCA</h4>
-      <p class="nota centrada">${textoCuotasBanca}</p>
-    </div>`;
   const zona = $('#panel-izq', root);
   const scrollLista = $('.lista-elegir', zona)?.scrollTop ?? 0;
   // --- configuración inicial: formación y estilo (solo durante el setup) ---
@@ -642,7 +642,10 @@ function dibujarPanelIzq(root, draft) {
         <span class="salio-pais">${bandera(s, 21)} ${esc(s.pais)}</span>
         <span class="salio-mundial">Mundial ${s.anio}</span>
         ${resultadoMundial
-          ? `<span class="salio-resultado">${esc(resultadoMundial)}</span>`
+          ? html`<span class="salio-resultado">
+              <span>POSICIÓN OBTENIDA EN ${s.anio}</span>
+              <strong>${esc(resultadoMundial)}</strong>
+            </span>`
           : ''}
       </div>
       <div class="resorteo">
@@ -667,7 +670,7 @@ function dibujarPanelIzq(root, draft) {
           const resumen = resumenPuestos(j, almanaque);
           return html`<button class="fila-jugador ${draft.colocando?.id === j.id ? 'seleccionado' : ''}" data-id="${j.id}" ${sel.has(j.id) ? '' : 'disabled'}>
             <span class="fj-nombre">${esc(j.nombre)}</span>
-            <span class="fj-pos">${j.pos} · ${resumen.puestos}</span>
+            <span class="fj-pos">${resumen.incluyeCategoria ? '' : `${j.pos} · `}${resumen.puestos}</span>
             <span class="fj-nivel">${resumen.nivel}</span>
           </button>`;
         }).join('')}
@@ -677,7 +680,7 @@ function dibujarPanelIzq(root, draft) {
           ⏭ Sin jugadores elegibles — pasar gratis</button>`}`;
   }
 
-  zona.innerHTML = indicadorBanca + sorteo;
+  zona.innerHTML = sorteo;
   const nuevaLista = $('.lista-elegir', zona);
   if (nuevaLista) nuevaLista.scrollTop = draft.preservarScrollLista ? scrollLista : 0;
   if (nuevaLista && draft.preservarScrollLista && draft.colocando?.id) {
@@ -801,7 +804,55 @@ function dibujarCancha(root, draft) {
     return `<div class="fila-cancha7">${slotsFila.join('')}</div>`;
   }).join('');
 
-  $('#cancha7', root).innerHTML = html`<div class="pasto7">${filas}</div>`;
+  const bancaPorCategoria = Object.fromEntries(
+    Object.keys(CUOTAS_BANCA).map(categoria => [
+      categoria,
+      draft.bench.filter(suplente => suplente.categoria === categoria),
+    ])
+  );
+  const indiceCategoria = { POR: 0, DEF: 0, MED: 0, DEL: 0 };
+  const slotsBanca = SLOTS_BANCA.map(categoria => {
+    const suplente = bancaPorCategoria[categoria][indiceCategoria[categoria]++];
+    const jugador = suplente ? JUGADORES_BY_ID[suplente.id] : null;
+    if (jugador) {
+      return html`
+        <div class="banca-slot banca-slot-ocupado" title="${esc(jugador.squad.pais)} ${jugador.squad.anio}">
+          <span class="banca-circulo">${jugador.nivel}</span>
+          <span class="banca-categoria">${categoria}</span>
+          <span class="banca-nombre">${bandera(jugador.squad, 12)} ${esc(jugador.nombre)}</span>
+          <span class="banca-anio">${jugador.squad.anio}</span>
+        </div>`;
+    }
+
+    const esDestino = colocando?.pos === categoria && cupoBancaDisponible(draft, colocando);
+    const contenido = html`
+      <span class="banca-circulo banca-circulo-vacio">${categoria}</span>
+      <span class="banca-categoria">${categoria}</span>
+      <span class="banca-nombre banca-vacia">${esDestino ? 'COLOCAR AQUÍ' : 'VACÍO'}</span>`;
+    return esDestino
+      ? html`<button type="button" class="banca-slot banca-disponible"
+          data-banca-categoria="${categoria}"
+          aria-label="Enviar a ${esc(colocando.nombre)} a banca como ${categoria}">
+          ${contenido}
+        </button>`
+      : html`<div class="banca-slot banca-slot-vacio">${contenido}</div>`;
+  });
+  const cuotas = conteoBanca(draft);
+  const resumenBanca = Object.entries(CUOTAS_BANCA)
+    .map(([categoria, cuota]) => `${categoria} ${cuotas[categoria]}/${cuota}`)
+    .join(' · ');
+  const banca = html`
+    <section class="banca-cancha" aria-labelledby="titulo-banca-cancha">
+      <header class="banca-cancha-cabecera">
+        <h3 id="titulo-banca-cancha">BANCA</h3>
+        <p>${resumenBanca}</p>
+      </header>
+      <div class="banca-fila banca-fila-cuatro">${slotsBanca.slice(0, 4).join('')}</div>
+      <div class="banca-fila banca-fila-tres">${slotsBanca.slice(4).join('')}</div>
+    </section>`;
+
+  const cancha = $('#cancha7', root);
+  cancha.innerHTML = html`<div class="pasto7">${filas}</div>${banca}`;
 
   $$('.slot-disponible', root).forEach(b => b.addEventListener('click', () => {
     const j = jugadorColocando(draft);
@@ -819,12 +870,27 @@ function dibujarCancha(root, draft) {
     dibujarEstado(root, draft);
     toast(`Has elegido a ${j.nombre} · ${puesto} · ${j.squad.pais} ${j.squad.anio} · media ${pick.nivel}`);
   }));
+
+  $$('.banca-disponible', cancha).forEach(b => b.addEventListener('click', () => {
+    const jugador = jugadorColocando(draft);
+    if (!jugador || !draft.oferta || b.dataset.bancaCategoria !== jugador.pos ||
+        !cupoBancaDisponible(draft, jugador)) return;
+    try {
+      agregarBanca(draft, jugador);
+    } catch (e) {
+      toast('No se pudo colocar al jugador en banca: ' + e.message, true);
+      return;
+    }
+    draft.oferta = null;
+    draft.preservarScrollLista = false;
+    dibujarEstado(root, draft);
+    toast(`Has elegido para la banca a ${jugador.nombre} · ${jugador.pos} · ${jugador.squad.pais} ${jugador.squad.anio} · media ${jugador.nivel}`);
+  }));
 }
 
 function dibujarBox(root, draft) {
   const { room } = app.estado;
   const almanaque = nivelesOcultos(room, draft); // los promedios se revelan al enviar el equipo
-  const colocando = jugadorColocando(draft);
 
   const ataque = promSlots(draft.picks.filter(p => ['MED', 'DEL'].includes(p.linea)));
   const defensa = promSlots(draft.picks.filter(p => ['POR', 'DEF'].includes(p.linea)));
@@ -843,46 +909,7 @@ function dibujarBox(root, draft) {
         </div>`;
     }).join('');
 
-  const bancaPorCategoria = Object.fromEntries(
-    Object.keys(CUOTAS_BANCA).map(categoria => [
-      categoria,
-      draft.bench.filter(b => b.categoria === categoria),
-    ])
-  );
-  const indiceCategoria = { POR: 0, DEF: 0, MED: 0, DEL: 0 };
-  const filasBanca = SLOTS_BANCA.map(categoria => {
-    const suplente = bancaPorCategoria[categoria][indiceCategoria[categoria]++];
-    const jugador = suplente ? JUGADORES_BY_ID[suplente.id] : null;
-    const esDestino = !jugador && colocando?.pos === categoria &&
-      cupoBancaDisponible(draft, colocando);
-    const contenido = html`
-      <span class="box-pos">${categoria}</span>
-      <span class="box-nombre">${jugador
-        ? `${bandera(jugador.squad, 12)} ${esc(jugador.nombre)} <i class="ficha-anio">${jugador.squad.anio}</i>`
-        : esDestino
-          ? '<span class="box-vacio banca-destino-texto">COLOCAR AQUÍ</span>'
-          : '<span class="box-vacio">———</span>'}</span>
-      <span class="box-nivel">${jugador ? jugador.nivel : ''}</span>`;
-    if (esDestino) {
-      return html`
-        <button type="button" class="box-fila banca-disponible"
-          data-banca-categoria="${categoria}"
-          aria-label="Colocar a ${esc(colocando.nombre)} en banca ${categoria}">
-          ${contenido}
-        </button>`;
-    }
-    return html`
-      <div class="box-fila ${jugador ? 'con-jugador' : ''}">
-        ${contenido}
-      </div>`;
-  }).join('');
-  const cuotas = conteoBanca(draft);
-  const resumenBanca = Object.entries(CUOTAS_BANCA)
-    .map(([categoria, cuota]) => `${categoria} ${cuotas[categoria]}/${cuota}`)
-    .join(' · ');
-
-  const caja = $('#boxscore', root);
-  caja.innerHTML = html`
+  $('#boxscore', root).innerHTML = html`
     <div class="boxscore">
       <div class="box-cabecera">
         <span class="box-titulo">BOX SCORE · XI ${totalTitulares(draft)}/11</span>
@@ -891,30 +918,7 @@ function dibujarBox(root, draft) {
         </span>
       </div>
       ${filas}
-    </div>
-    <div class="boxscore banca-score">
-      <div class="box-cabecera">
-        <span class="box-titulo">BANCA · ${totalBanca(draft)}/7</span>
-        <span class="box-fuerzas">${resumenBanca}</span>
-      </div>
-      ${filasBanca}
     </div>`;
-
-  $$('.banca-disponible', caja).forEach(b => b.addEventListener('click', () => {
-    const jugador = jugadorColocando(draft);
-    if (!jugador || !draft.oferta || b.dataset.bancaCategoria !== jugador.pos ||
-        !cupoBancaDisponible(draft, jugador)) return;
-    try {
-      agregarBanca(draft, jugador);
-    } catch (e) {
-      toast('No se pudo colocar al jugador en banca: ' + e.message, true);
-      return;
-    }
-    draft.oferta = null;
-    draft.preservarScrollLista = false;
-    dibujarEstado(root, draft);
-    toast(`Has elegido para la banca a ${jugador.nombre} · ${jugador.pos} · ${jugador.squad.pais} ${jugador.squad.anio} · media ${jugador.nivel}`);
-  }));
 }
 
 function actualizarRivales(root) {

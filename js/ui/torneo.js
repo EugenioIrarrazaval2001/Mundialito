@@ -1364,8 +1364,7 @@ function construirPasos(mundial) {
             ? `${bandera(s, 21)} ${esc(s.pais)} ${s.anio}`
             : `⭐ ${esc(campeon.nombre)}`}</h2>
           ${campeon.esIA
-            ? `<p class="campeon-apodo">"${esc(s.apodo)}"</p>
-               <p class="campeon-dt">…ganó la máquina. Papelón de la oficina. 😅</p>`
+            ? '<p class="campeon-dt">La máquina se quedó con el Mundialito. 😅</p>'
             : `<p class="campeon-dt">${esMioCampeon ? '¡ERES EL CAMPEÓN, DT! 👑' : `DT campeón: <b>${esc(campeon.nombre)}</b> 👑`}</p>`}
           <p class="subcampeon">Subcampeón: ${nombreEquipo(m, m.subcampeonId)}</p>
         </div>

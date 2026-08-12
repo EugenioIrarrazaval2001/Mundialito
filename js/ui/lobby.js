@@ -43,7 +43,7 @@ function dibujar(root) {
       </header>
 
       <h2 class="titulo-seccion">Vestuario <span class="contador">(${players.length}/${MAX_JUGADORES} ${players.length === 1 ? 'jugador' : 'jugadores'})</span></h2>
-      ${esLocal ? '' : html`<p class="nota centrada">Comparte el código <b>${esc(room.code)}</b> con tu oficina para que se unan.</p>`}
+      ${esLocal ? '' : html`<p class="nota centrada">Comparte el código <b>${esc(room.code)}</b> para que los demás jugadores se unan.</p>`}
       ${salaLlena && !salaSobrepasada ? '<p class="nota centrada">Sala llena: este es el máximo para un mundial de 32 equipos.</p>' : ''}
       ${salaSobrepasada ? html`<p class="nota centrada error-lobby">Hay ${players.length} jugadores, pero el máximo es ${MAX_JUGADORES}. Deben salir ${players.length - MAX_JUGADORES} antes de empezar.</p>` : ''}
 

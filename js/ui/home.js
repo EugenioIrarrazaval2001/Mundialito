@@ -328,10 +328,10 @@ export function pantallaHome(root) {
       <header class="home-cabecera">
         <div class="estrellas">★ ★ ★</div>
         <h1 class="titulo">MUNDIALITO</h1>
-        <p class="subtitulo">EL TORNEO DE LA OFICINA · PLANTELES HISTÓRICOS</p>
+        <p class="subtitulo">EL TORNEO DE SELECCIONES HISTÓRICAS</p>
         ${ONLINE ? '' : html`
           <p class="aviso-local">⚠ Modo local de prueba (sin Supabase configurado):
-          puedes jugar solo contra la máquina. Para jugar con tu oficina, sigue el README.</p>`}
+          puedes jugar solo contra la máquina. Para jugar online con otros jugadores, sigue el README.</p>`}
       </header>
 
       <div class="home-tarjetas">

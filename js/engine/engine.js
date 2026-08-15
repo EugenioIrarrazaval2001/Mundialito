@@ -2,7 +2,7 @@
 // Todo es determinista a partir de la semilla de la sala.
 
 import { Rng } from './rng.js';
-import { SQUADS, FORMACIONES, FORMACION_SLOTS, JUGADORES_BY_ID, lineaDePuesto, nivelEnPuesto, puestosJugador } from '../data/squads.js';
+import { SQUADS, FORMACIONES, FORMACION_SLOTS, JUGADORES_BY_ID, estiloDeFormacion, lineaDePuesto, nivelEnPuesto, puestosJugador } from '../data/squads.js';
 
 // room.modo guarda juego y tamaño juntos, ej: 'clasico|32' (sin tocar el esquema)
 export function parseModo(modoStr) {
@@ -100,7 +100,7 @@ export function mejorXIMaquina(squadObj, formacion = '4-3-3') {
     const puesto = FORMACION_SLOTS[formacion][slotIndex];
     return { puesto, linea: lineaDePuesto(puesto), id: jugador.id, nivel, slotIndex };
   });
-  return lineupDesdeSlots(slots, 'equilibrado', crearBancaIA(squadObj, ids));
+  return lineupDesdeSlots(slots, estiloDeFormacion(formacion), crearBancaIA(squadObj, ids));
 }
 
 // Alias conservados para callers antiguos del motor; la UI humana no los usa.
@@ -249,6 +249,24 @@ export const PESO_GOL_PUESTO = Object.freeze({
 const VENTANAS_CAMBIOS = Object.freeze([[60, 69], [70, 79], [80, 88]]);
 const VENTANAS_ALARGUE = Object.freeze([[93, 104], [106, 116]]);
 
+const FACTOR_ATAQUE_POR_EXPULSION = 0.90;
+const FACTOR_DEFENSA_POR_EXPULSION = 0.90;
+
+// Tasas aproximadas de los Mundiales 2014, 2018 y 2022. Las tarjetas viven
+// solamente durante este partido y usan un RNG propio; no generan suspensiones.
+export const DISCIPLINA = Object.freeze({
+  lambdaAmarillasObjetivo: 3.30,
+  lambdaAmarillaOrdinaria: 3.21,
+  lambdaRojaDirecta: 0.052,
+  lambdaDobleAmarilla: 0.042,
+  factorAtaquePorExpulsion: FACTOR_ATAQUE_POR_EXPULSION,
+  factorDefensaPorExpulsion: FACTOR_DEFENSA_POR_EXPULSION,
+  pesosExpulsionLinea: Object.freeze({ DEF: 0.35, MED: 0.43, DEL: 0.22 }),
+});
+
+const ORDEN_EXPULSION = Object.freeze({ segunda_amarilla: 0, roja_directa: 1 });
+const ORDEN_TARJETA = Object.freeze({ segunda_amarilla: 0, roja_directa: 1, amarilla: 2 });
+
 function slotsIniciales(equipo) {
   if (Array.isArray(equipo.lineup?.slots)) {
     return equipo.lineup.slots.flatMap((slot, slotIndex) => {
@@ -267,6 +285,7 @@ function slotsIniciales(equipo) {
         linea: slot.linea || lineaDePuesto(slot.puesto),
         nivel,
         titularOriginal: true,
+        minutoEntrada: 1,
       }];
     });
   }
@@ -288,6 +307,7 @@ function slotsIniciales(equipo) {
       nivel: nivelPosicional ?? jugador.nivel,
       slotIndex,
       titularOriginal: true,
+      minutoEntrada: 1,
     }];
   });
 }
@@ -304,7 +324,17 @@ function crearEstadoPartido(equipo) {
       vistos.add(id);
       return [{ id, categoria: suplente?.categoria || jugador.pos }];
     });
-  return { equipo, slots, bench, usados: new Set(), sustituciones: [] };
+  return {
+    equipo,
+    slots,
+    bench,
+    usados: new Set(),
+    sustituciones: [],
+    amarillas: new Map(),
+    expulsados: new Set(),
+    tarjetas: [],
+    numeroExpulsados: 0,
+  };
 }
 
 function snapshotSlots(estado) {
@@ -359,6 +389,7 @@ function aplicarSustitucion(estado, candidato, minuto) {
     id: candidato.jugador.id,
     nivel: candidato.nivel,
     titularOriginal: false,
+    minutoEntrada: minuto,
   };
   estado.usados.add(candidato.jugador.id);
   const evento = {
@@ -379,6 +410,130 @@ function intentosDeCambios(rng, ventanas) {
     intentos.push({ minuto: desde + rng.int(hasta - desde + 1), lado: 'B' });
   }
   return intentos.sort((a, b) => a.minuto - b.minuto || a.lado.localeCompare(b.lado));
+}
+
+function programarDisciplinaPeriodo(rng, desdeMin, hastaMin) {
+  const proporcion = (hastaMin - desdeMin + 1) / 90;
+  const cantidadAmarillas = rng.poisson(DISCIPLINA.lambdaAmarillaOrdinaria * proporcion);
+  const cantidadRojas = rng.poisson(DISCIPLINA.lambdaRojaDirecta * proporcion);
+  const cantidadDobles = rng.poisson(DISCIPLINA.lambdaDobleAmarilla * proporcion);
+  const amarillas = [];
+  const expulsiones = [];
+  let orden = 0;
+  const minuto = (desde, hasta) => desde + rng.int(hasta - desde + 1);
+  const lado = () => rng.next() < 0.5 ? 'A' : 'B';
+
+  for (let i = 0; i < cantidadAmarillas; i++) {
+    amarillas.push({ minuto: minuto(desdeMin, hastaMin), lado: lado(), orden: orden++ });
+  }
+  for (let i = 0; i < cantidadRojas; i++) {
+    expulsiones.push({
+      minuto: minuto(desdeMin, hastaMin),
+      lado: lado(),
+      tipo: 'roja_directa',
+      orden: orden++,
+    });
+  }
+  const desdeDoble = desdeMin <= 90 ? Math.max(15, desdeMin) : desdeMin;
+  for (let i = 0; i < cantidadDobles; i++) {
+    expulsiones.push({
+      minuto: minuto(desdeDoble, hastaMin),
+      lado: lado(),
+      tipo: 'segunda_amarilla',
+      orden: orden++,
+    });
+  }
+
+  amarillas.sort((a, b) => a.minuto - b.minuto || a.lado.localeCompare(b.lado) || a.orden - b.orden);
+  expulsiones.sort((a, b) =>
+    a.minuto - b.minuto
+    || ORDEN_EXPULSION[a.tipo] - ORDEN_EXPULSION[b.tipo]
+    || a.lado.localeCompare(b.lado)
+    || a.orden - b.orden);
+  return { amarillas, expulsiones, indiceAmarilla: 0 };
+}
+
+function registrarTarjeta(estado, minuto, jugadorId, tipo) {
+  const tarjeta = { minuto, equipoId: estado.equipo.id, jugadorId, tipo };
+  estado.tarjetas.push(tarjeta);
+  return tarjeta;
+}
+
+function registrarAmarillaOrdinaria(rng, estado, minuto) {
+  // La amarilla ordinaria nunca provoca por accidente una segunda amarilla.
+  const disponibles = estado.slots.filter(slot => !estado.amarillas.has(slot.id));
+  if (!disponibles.length) return null;
+  const slot = disponibles[rng.int(disponibles.length)];
+  estado.amarillas.set(slot.id, 1);
+  return registrarTarjeta(estado, minuto, slot.id, 'amarilla');
+}
+
+function procesarAmarillasHasta(rng, programa, limite, estadoA, estadoB) {
+  while (
+    programa
+    && programa.indiceAmarilla < programa.amarillas.length
+    && programa.amarillas[programa.indiceAmarilla].minuto <= limite
+  ) {
+    const programada = programa.amarillas[programa.indiceAmarilla++];
+    registrarAmarillaOrdinaria(
+      rng,
+      programada.lado === 'A' ? estadoA : estadoB,
+      programada.minuto,
+    );
+  }
+}
+
+function slotExpulsableAleatorio(rng, estado) {
+  const lineas = Object.entries(DISCIPLINA.pesosExpulsionLinea).flatMap(([linea, peso]) => {
+    const slots = estado.slots.filter(slot => slot.linea === linea && slot.puesto !== 'POR');
+    return slots.length ? [{ linea, peso, slots }] : [];
+  });
+  const pesoTotal = lineas.reduce((total, entrada) => total + entrada.peso, 0);
+  if (!lineas.length || pesoTotal <= 0) return null;
+  let valor = rng.next() * pesoTotal;
+  let elegida = lineas[lineas.length - 1];
+  for (const entrada of lineas) {
+    valor -= entrada.peso;
+    if (valor <= 0) {
+      elegida = entrada;
+      break;
+    }
+  }
+  return elegida.slots[rng.int(elegida.slots.length)];
+}
+
+function expulsarJugador(estado, jugadorId) {
+  const indice = estado.slots.findIndex(slot => slot.id === jugadorId);
+  if (indice < 0) return false;
+  estado.slots.splice(indice, 1);
+  estado.expulsados.add(jugadorId);
+  estado.numeroExpulsados = estado.expulsados.size;
+  return true;
+}
+
+function aplicarExpulsionProgramada(rng, estado, programada) {
+  const slot = slotExpulsableAleatorio(rng, estado);
+  if (!slot) return null;
+
+  if (programada.tipo === 'segunda_amarilla') {
+    if (!estado.amarillas.has(slot.id)) {
+      const desde = Math.max(1, slot.minutoEntrada ?? 1);
+      const hasta = programada.minuto - 1;
+      if (hasta < desde) return null;
+      const minutoPrimera = desde + rng.int(hasta - desde + 1);
+      estado.amarillas.set(slot.id, 1);
+      registrarTarjeta(estado, minutoPrimera, slot.id, 'amarilla');
+    }
+    estado.amarillas.set(slot.id, (estado.amarillas.get(slot.id) || 0) + 1);
+  }
+
+  registrarTarjeta(estado, programada.minuto, slot.id, programada.tipo);
+  expulsarJugador(estado, slot.id);
+  return slot;
+}
+
+function hayJugadorExpulsable(estado) {
+  return estado.slots.some(slot => slot.puesto !== 'POR' && ['DEF', 'MED', 'DEL'].includes(slot.linea));
 }
 
 function elegirGoleadorActivo(rng, estado) {
@@ -416,11 +571,28 @@ function golesConEventosActivos(rng, cantidad, estado, desdeMin, hastaMin) {
   return eventos;
 }
 
+function fuerzaActiva(estado) {
+  const fuerza = fuerzaEquipo(equipoActivo(estado));
+  if (!estado.numeroExpulsados) return fuerza;
+  const factorAtaque = Math.pow(
+    DISCIPLINA.factorAtaquePorExpulsion,
+    estado.numeroExpulsados,
+  );
+  const factorDefensa = Math.pow(
+    DISCIPLINA.factorDefensaPorExpulsion,
+    estado.numeroExpulsados,
+  );
+  return {
+    ...fuerza,
+    ataque: fuerza.ataque * factorAtaque,
+    defensa: fuerza.defensa * factorDefensa,
+  };
+}
+
 function simularSegmento(rng, estadoA, estadoB, desdeMin, hastaMin, etapa, eventos) {
   if (hastaMin < desdeMin) return { golesA: 0, golesB: 0 };
   const duracion = hastaMin - desdeMin + 1;
-  const eqA = equipoActivo(estadoA), eqB = equipoActivo(estadoB);
-  const fA = fuerzaEquipo(eqA), fB = fuerzaEquipo(eqB);
+  const fA = fuerzaActiva(estadoA), fB = fuerzaActiva(estadoB);
   const golesA = rng.poisson(lambdaGoles(fA.ataque, fB.defensa, etapa) * duracion / 90);
   const golesB = rng.poisson(lambdaGoles(fB.ataque, fA.defensa, etapa) * duracion / 90);
   eventos.push(
@@ -430,29 +602,161 @@ function simularSegmento(rng, estadoA, estadoB, desdeMin, hastaMin, etapa, event
   return { golesA, golesB };
 }
 
-function simularPeriodo(rng, estadoA, estadoB, desdeMin, hastaMin, etapa, intentos, eventos) {
+function simularPrefijoAntesDeExpulsion(
+  rng,
+  estadoA,
+  estadoB,
+  desdeMin,
+  hastaPlanificado,
+  minutoExpulsion,
+  etapa,
+  eventos,
+) {
+  // Una roja no debe volver a sortear el pasado. Previsualizamos el segmento
+  // completo que el motor habría generado hasta su próxima frontera legacy,
+  // conservamos literalmente su prefijo y descartamos solo el futuro afectado.
+  const temporales = [];
+  simularSegmento(
+    rng,
+    estadoA,
+    estadoB,
+    desdeMin,
+    hastaPlanificado,
+    etapa,
+    temporales,
+  );
+  const preservados = temporales.filter(evento => evento.minuto < minutoExpulsion);
+  eventos.push(...preservados);
+  return {
+    golesA: preservados.filter(evento => evento.equipoId === estadoA.equipo.id).length,
+    golesB: preservados.filter(evento => evento.equipoId === estadoB.equipo.id).length,
+  };
+}
+
+function proximoMinutoCambioRealizable(intentos, desdeIndice, estadoA, estadoB, fallback) {
+  for (let i = desdeIndice; i < intentos.length; i++) {
+    const intento = intentos[i];
+    const estado = intento.lado === 'A' ? estadoA : estadoB;
+    if (candidatosCambio(estado).length > 0) return intento.minuto;
+  }
+  return fallback;
+}
+
+function simularPeriodo(
+  rng,
+  estadoA,
+  estadoB,
+  desdeMin,
+  hastaMin,
+  etapa,
+  intentos,
+  eventos,
+  disciplina = null,
+) {
   let cursor = desdeMin;
   let golesA = 0, golesB = 0;
-  let indice = 0;
-  while (indice < intentos.length) {
-    const minuto = intentos[indice].minuto;
-    const lote = [];
-    while (indice < intentos.length && intentos[indice].minuto === minuto) {
-      lote.push(intentos[indice++]);
-    }
-    const posibles = lote.filter(intento =>
-      candidatosCambio(intento.lado === 'A' ? estadoA : estadoB).length > 0);
-    // Un intento sin pareja legal no crea un segmento artificial.
-    if (!posibles.length) continue;
+  let indiceCambio = 0;
+  let indiceExpulsion = 0;
+  const expulsiones = disciplina?.programa.expulsiones || [];
 
-    const tramo = simularSegmento(rng, estadoA, estadoB, cursor, minuto - 1, etapa, eventos);
+  while (indiceCambio < intentos.length || indiceExpulsion < expulsiones.length) {
+    const minutoCambio = intentos[indiceCambio]?.minuto ?? Infinity;
+    const minutoExpulsion = expulsiones[indiceExpulsion]?.minuto ?? Infinity;
+    const minuto = Math.min(minutoCambio, minutoExpulsion);
+    const loteCambios = [];
+    const loteExpulsiones = [];
+    while (indiceCambio < intentos.length && intentos[indiceCambio].minuto === minuto) {
+      loteCambios.push(intentos[indiceCambio++]);
+    }
+    while (indiceExpulsion < expulsiones.length && expulsiones[indiceExpulsion].minuto === minuto) {
+      loteExpulsiones.push(expulsiones[indiceExpulsion++]);
+    }
+
+    // Las amarillas anteriores al corte se asignan con el XI que estaba activo,
+    // pero nunca crean por sí mismas un segmento ni consumen RNG deportivo.
+    procesarAmarillasHasta(
+      disciplina?.rng,
+      disciplina?.programa,
+      minuto - 1,
+      estadoA,
+      estadoB,
+    );
+
+    const posiblesAntes = loteCambios.filter(intento =>
+      candidatosCambio(intento.lado === 'A' ? estadoA : estadoB).length > 0);
+    const hayExpulsion = loteExpulsiones.some(programada =>
+      hayJugadorExpulsable(programada.lado === 'A' ? estadoA : estadoB));
+    // Un intento sin pareja legal ni expulsión realizable no crea un segmento.
+    if (!posiblesAntes.length && !hayExpulsion) {
+      procesarAmarillasHasta(
+        disciplina?.rng,
+        disciplina?.programa,
+        minuto,
+        estadoA,
+        estadoB,
+      );
+      continue;
+    }
+
+    const proximoCambio = posiblesAntes.length
+      ? minuto
+      : proximoMinutoCambioRealizable(
+        intentos,
+        indiceCambio,
+        estadoA,
+        estadoB,
+        hastaMin + 1,
+      );
+    const tramo = hayExpulsion
+      ? simularPrefijoAntesDeExpulsion(
+        rng,
+        estadoA,
+        estadoB,
+        cursor,
+        Math.min(hastaMin, proximoCambio - 1),
+        minuto,
+        etapa,
+        eventos,
+      )
+      : simularSegmento(rng, estadoA, estadoB, cursor, minuto - 1, etapa, eventos);
     golesA += tramo.golesA; golesB += tramo.golesB;
+
+    // Convención del minuto compartido: expulsión, sustitución y luego goles.
+    let huboExpulsion = false;
+    for (const programada of loteExpulsiones) {
+      const estado = programada.lado === 'A' ? estadoA : estadoB;
+      if (aplicarExpulsionProgramada(disciplina.rng, estado, programada)) {
+        huboExpulsion = true;
+      }
+    }
+    // El prefijo ya consumió los valores legacy que lo originaron. Desde la
+    // primera roja, todo el deporte futuro usa el substream local del partido;
+    // nunca reutiliza como Poisson valores legacy destinados a cambios futuros.
+    if (huboExpulsion) rng.usarFallback?.();
+    const posibles = loteExpulsiones.length
+      ? loteCambios.filter(intento =>
+        candidatosCambio(intento.lado === 'A' ? estadoA : estadoB).length > 0)
+      : posiblesAntes;
     for (const intento of posibles) {
       const estado = intento.lado === 'A' ? estadoA : estadoB;
       aplicarSustitucion(estado, elegirSustitucion(rng, estado), minuto);
     }
+    procesarAmarillasHasta(
+      disciplina?.rng,
+      disciplina?.programa,
+      minuto,
+      estadoA,
+      estadoB,
+    );
     cursor = minuto;
   }
+  procesarAmarillasHasta(
+    disciplina?.rng,
+    disciplina?.programa,
+    hastaMin,
+    estadoA,
+    estadoB,
+  );
   const tramoFinal = simularSegmento(rng, estadoA, estadoB, cursor, hastaMin, etapa, eventos);
   return { golesA: golesA + tramoFinal.golesA, golesB: golesB + tramoFinal.golesB };
 }
@@ -477,28 +781,58 @@ function resolverPenales(rng, fA, fB, override) {
   return { golesA: pa, golesB: pb, auto: true };
 }
 
-export function simularPartido(rng, eqA, eqB, conDesempate = false, override = null, soloPenales = false, etapa = 'grupos') {
-  // Solo Penales conserva una ruta temprana: no genera minutos, cambios,
-  // Poisson ni alargue, y entra directamente a la tanda 0-0.
-  if (soloPenales) {
-    const fA = fuerzaEquipo(eqA), fB = fuerzaEquipo(eqB);
-    const penales = resolverPenales(rng, fA, fB, override);
-    const ganador = penales.golesA > penales.golesB ? eqA.id : eqB.id;
-    return {
-      idA: eqA.id, idB: eqB.id,
-      goles90A: 0, goles90B: 0,
-      golesA: penales.golesA, golesB: penales.golesB,
-      eventos: [], sustituciones: [], alargue: false, duracion: 0,
-      penales, ganador,
-    };
-  }
+function rngDesdeNext(next) {
+  const rng = {
+    next,
+    int(n) { return Math.floor(this.next() * n); },
+    pick(arr) { return arr[this.int(arr.length)]; },
+    shuffle(arr) {
+      const copia = arr.slice();
+      for (let i = copia.length - 1; i > 0; i--) {
+        const j = this.int(i + 1);
+        [copia[i], copia[j]] = [copia[j], copia[i]];
+      }
+      return copia;
+    },
+    poisson(lambda) {
+      const limite = Math.exp(-lambda);
+      let k = 0, producto = 1;
+      do { k++; producto *= this.next(); } while (producto > limite);
+      return k - 1;
+    },
+  };
+  return rng;
+}
 
+function rngGrabador(rngOriginal, valores) {
+  return rngDesdeNext(() => {
+    const valor = rngOriginal.next();
+    valores.push(valor);
+    return valor;
+  });
+}
+
+function rngReplay(valores, rngFallback) {
+  let indice = 0;
+  let soloFallback = false;
+  const rng = rngDesdeNext(() =>
+    !soloFallback && indice < valores.length ? valores[indice++] : rngFallback.next());
+  rng.usarFallback = () => { soloFallback = true; };
+  return rng;
+}
+
+function simularPartidoInterno(rng, eqA, eqB, conDesempate, override, etapa, disciplina = null) {
   const estadoA = crearEstadoPartido(eqA);
   const estadoB = crearEstadoPartido(eqB);
   const eventos = [];
+  const disciplinaRegular = disciplina ? {
+    rng: disciplina.rng,
+    programa: programarDisciplinaPeriodo(disciplina.rng, 1, 90),
+  } : null;
   const regulares = simularPeriodo(
     rng, estadoA, estadoB, 1, 90, etapa,
     intentosDeCambios(rng, VENTANAS_CAMBIOS), eventos,
+    disciplinaRegular,
   );
   const goles90A = regulares.golesA, goles90B = regulares.golesB;
   let golesA = goles90A, golesB = goles90B;
@@ -506,9 +840,16 @@ export function simularPartido(rng, eqA, eqB, conDesempate = false, override = n
 
   if (conDesempate && golesA === golesB) {
     alargue = true;
+    // El stream disciplinario continúa, pero 91-120 solo se programa cuando el
+    // empate real confirma que ese periodo existe.
+    const disciplinaExtra = disciplina ? {
+      rng: disciplina.rng,
+      programa: programarDisciplinaPeriodo(disciplina.rng, 91, 120),
+    } : null;
     const extra = simularPeriodo(
       rng, estadoA, estadoB, 91, 120, etapa,
       intentosDeCambios(rng, VENTANAS_ALARGUE), eventos,
+      disciplinaExtra,
     );
     golesA += extra.golesA;
     golesB += extra.golesB;
@@ -527,6 +868,12 @@ export function simularPartido(rng, eqA, eqB, conDesempate = false, override = n
   eventos.sort((a, b) => a.minuto - b.minuto);
   const sustituciones = [...estadoA.sustituciones, ...estadoB.sustituciones]
     .sort((a, b) => a.minuto - b.minuto || a.equipoId.localeCompare(b.equipoId));
+  const tarjetas = [...estadoA.tarjetas, ...estadoB.tarjetas]
+    .sort((a, b) =>
+      a.minuto - b.minuto
+      || ORDEN_TARJETA[a.tipo] - ORDEN_TARJETA[b.tipo]
+      || a.equipoId.localeCompare(b.equipoId)
+      || a.jugadorId.localeCompare(b.jugadorId));
   const ganador = golesA > golesB ? eqA.id
     : golesB > golesA ? eqB.id
     : penales ? (penales.golesA > penales.golesB ? eqA.id : eqB.id)
@@ -535,12 +882,63 @@ export function simularPartido(rng, eqA, eqB, conDesempate = false, override = n
   return {
     idA: eqA.id, idB: eqB.id,
     goles90A, goles90B, golesA, golesB,
-    eventos, sustituciones,
+    eventos, sustituciones, tarjetas,
     slotsFinalesA: snapshotSlots(estadoA),
     slotsFinalesB: snapshotSlots(estadoB),
     alargue, duracion: alargue ? 120 : 90,
     penales, ganador,
   };
+}
+
+export function simularPartido(
+  rng,
+  eqA,
+  eqB,
+  conDesempate = false,
+  override = null,
+  soloPenales = false,
+  etapa = 'grupos',
+  claveDisciplina = null,
+) {
+  // Solo Penales conserva la ruta temprana legacy: no genera minutos, cambios,
+  // disciplina, Poisson de partido ni alargue, y entra directamente a la tanda.
+  if (soloPenales) {
+    const fA = fuerzaEquipo(eqA), fB = fuerzaEquipo(eqB);
+    const penales = resolverPenales(rng, fA, fB, override);
+    const ganador = penales.golesA > penales.golesB ? eqA.id : eqB.id;
+    return {
+      idA: eqA.id, idB: eqB.id,
+      goles90A: 0, goles90B: 0,
+      golesA: penales.golesA, golesB: penales.golesB,
+      eventos: [], sustituciones: [], tarjetas: [], alargue: false, duracion: 0,
+      penales, ganador,
+    };
+  }
+
+  const clave = String(claveDisciplina ?? `${eqA.id}-${eqB.id}-${etapa}`);
+  const valoresLegacy = [];
+
+  // La simulación sombra avanza el RNG deportivo global exactamente como lo
+  // hacía el motor sin disciplina (incluidos alargue y tanda). El partido visible
+  // reproduce esos valores; si una roja crea cortes adicionales, usa un fallback
+  // deportivo local. Así ninguna tarjeta desplaza el stream de partidos futuros.
+  simularPartidoInterno(
+    rngGrabador(rng, valoresLegacy),
+    eqA, eqB, conDesempate, override, etapa, null,
+  );
+  const rngDeporte = rngReplay(
+    valoresLegacy,
+    new Rng(`deporte-disciplina-${clave}`),
+  );
+  return simularPartidoInterno(
+    rngDeporte,
+    eqA,
+    eqB,
+    conDesempate,
+    override,
+    etapa,
+    { rng: new Rng(`disciplina-${clave}`) },
+  );
 }
 
 // ---------- Torneo ----------
@@ -596,8 +994,20 @@ export function simularMundial(seed, equiposHumanos, overrides = {}, totalDesead
       const partidos = [];
       for (const gr of grupos) {
         const [a, b, c, d] = fechas[f];
-        partidos.push({ grupo: gr.nombre, ...simularPartido(rng, gr.equipos[a], gr.equipos[b], false, null, false, 'grupos') });
-        partidos.push({ grupo: gr.nombre, ...simularPartido(rng, gr.equipos[c], gr.equipos[d], false, null, false, 'grupos') });
+        const claveA = `g-fecha${f + 1}-${gr.nombre}-0`;
+        const claveB = `g-fecha${f + 1}-${gr.nombre}-1`;
+        partidos.push({
+          grupo: gr.nombre,
+          ...simularPartido(
+            rng, gr.equipos[a], gr.equipos[b], false, null, false, 'grupos', `${seed}-${claveA}`,
+          ),
+        });
+        partidos.push({
+          grupo: gr.nombre,
+          ...simularPartido(
+            rng, gr.equipos[c], gr.equipos[d], false, null, false, 'grupos', `${seed}-${claveB}`,
+          ),
+        });
       }
       faseGrupos.push({ nombre: 'Fecha ' + (f + 1), partidos });
     }
@@ -644,14 +1054,28 @@ export function simularMundial(seed, equiposHumanos, overrides = {}, totalDesead
     const etapa = ETAPA_POR_RONDA[nombresRonda[r]] ?? 'grupos';
     const partidos = ronda.map(([a, b], i) => {
       const clave = `k${r}-${i}`;
-      return { ...simularPartido(rng, a, b, true, overrides[clave], soloPenales, etapa), clave };
+      return {
+        ...simularPartido(
+          rng, a, b, true, overrides[clave], soloPenales, etapa, `${seed}-${clave}`,
+        ),
+        clave,
+      };
     });
     llaves.push({ nombre: nombresRonda[r], partidos });
     const ganadores = partidos.map(p => eqById[p.ganador]);
     if (nombresRonda[r] === 'Semifinales') {
       const perdedores = partidos.map(p => eqById[p.ganador === p.idA ? p.idB : p.idA]);
       tercerPuesto = {
-        ...simularPartido(rng, perdedores[0], perdedores[1], true, overrides['tp'], soloPenales, 'tercerPuesto'),
+        ...simularPartido(
+          rng,
+          perdedores[0],
+          perdedores[1],
+          true,
+          overrides['tp'],
+          soloPenales,
+          'tercerPuesto',
+          `${seed}-tp`,
+        ),
         clave: 'tp',
       };
     }

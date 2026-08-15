@@ -7,7 +7,6 @@ import {
   SQUADS_HISTORICAS_AMPLIADAS, RESULTADO_MUNDIAL, bandera, squadsParaModo,
 } from '../data/squads.js';
 
-const MINIMO_SQUADS = 32;
 const ORDEN_LINEAS = ['POR', 'DEF', 'MED', 'DEL'];
 const NOMBRE_LINEA = {
   POR: 'ARQUEROS', DEF: 'DEFENSAS', MED: 'MEDIOCAMPISTAS', DEL: 'DELANTEROS',
@@ -41,6 +40,24 @@ function keysActivasOrdenadas() {
   return SQUADS_HISTORICAS_AMPLIADAS
     .filter(squad => enabledSquadKeys.has(squad.key))
     .map(squad => squad.key);
+}
+
+// El universo elegido pertenece al prÃ³ximo torneo, no al grupo. Se expone
+// aquÃ­ para que el dashboard pueda reutilizar el selector completo sin
+// duplicar su estado ni su lÃ³gica de validaciÃ³n.
+export function keysDraftActivas() {
+  return keysActivasOrdenadas();
+}
+
+export function configuracionDraftValida(modo = 'almanaque') {
+  return squadsParaModo(modo, keysActivasOrdenadas()).length > 0;
+}
+
+export function resumenUniversoDraft(modo = 'almanaque') {
+  return {
+    activos: squadsParaModo(modo, keysActivasOrdenadas()).length,
+    total: squadsParaModo(modo).length,
+  };
 }
 
 function presentacionResultado(squad) {
@@ -109,7 +126,9 @@ function detallePlantelHtml(squad) {
   `;
 }
 
-function abrirSeleccionesMundiales(disparador, { alCambiar, configuracionValida }) {
+function abrirSeleccionesMundiales(disparador, {
+  alCambiar, configuracionValida, resumenDraft,
+}) {
   if (document.querySelector('.overlay-selecciones-mundiales')) return;
 
   const mundiales = mundialesDelPoolPrincipal();
@@ -120,15 +139,20 @@ function abrirSeleccionesMundiales(disparador, { alCambiar, configuracionValida 
   overlay.className = 'overlay-selecciones-mundiales';
   overlay.innerHTML = html`
     <section class="panel-selecciones-mundiales" role="dialog" aria-modal="true"
-      aria-labelledby="titulo-selecciones-mundiales">
+      aria-labelledby="titulo-selecciones-mundiales"
+      aria-describedby="explicacion-selecciones-mundiales">
       <header class="selecciones-mundiales-cabecera">
         <div>
-          <h2 id="titulo-selecciones-mundiales">SELECCIONES MUNDIALES</h2>
+          <h2 id="titulo-selecciones-mundiales">UNIVERSO DEL DRAFT</h2>
+          <p id="explicacion-selecciones-mundiales" class="selecciones-explicacion">
+            Elige qué planteles pueden aparecer mientras armas tu equipo.
+            Esto no afecta a los rivales que podrás enfrentar en el torneo.
+          </p>
           <p class="selecciones-conteo-global" aria-live="polite">
             <strong data-total-activas></strong>
           </p>
-          <p class="selecciones-aviso-minimo" hidden>
-            Selecciona al menos 32 selecciones para jugar un Mundial.
+          <p class="selecciones-aviso-draft" hidden>
+            Activa al menos un plantel para el draft.
           </p>
         </div>
         <button type="button" class="btn btn-volver-selecciones">Volver</button>
@@ -149,7 +173,7 @@ function abrirSeleccionesMundiales(disparador, { alCambiar, configuracionValida 
               </button>
               <label class="interruptor interruptor-mundial">
                 <input type="checkbox" data-switch-anio="${anio}"
-                  aria-label="Activar o desactivar Mundial ${anio}">
+                  aria-label="Incluir o excluir planteles del Mundial ${anio} en el draft">
                 <span class="interruptor-pista" aria-hidden="true"><span></span></span>
                 <span class="interruptor-estado" aria-hidden="true"></span>
               </label>
@@ -169,7 +193,7 @@ function abrirSeleccionesMundiales(disparador, { alCambiar, configuracionValida 
                     </button>
                     <label class="interruptor interruptor-seleccion">
                       <input type="checkbox" data-switch-squad="${esc(squad.key)}"
-                        aria-label="Activar o desactivar ${esc(squad.pais)} ${squad.anio}">
+                        aria-label="Incluir o excluir ${esc(squad.pais)} ${squad.anio} del draft">
                       <span class="interruptor-pista" aria-hidden="true"><span></span></span>
                       <span class="interruptor-estado" aria-hidden="true"></span>
                     </label>
@@ -241,7 +265,8 @@ function abrirSeleccionesMundiales(disparador, { alCambiar, configuracionValida 
       master.checked = activas === squads.length;
       master.indeterminate = parcial;
       master.setAttribute('aria-checked', parcial ? 'mixed' : String(master.checked));
-      bloque.querySelector('[data-conteo-anio]').textContent = `${activas} / ${squads.length} activas`;
+      bloque.querySelector('[data-conteo-anio]').textContent =
+        `${activas} / ${squads.length} disponibles`;
       const etiquetaEstado = bloque.querySelector('[data-estado-anio]');
       etiquetaEstado.textContent = estado;
       etiquetaEstado.className = `mundial-estado mundial-estado-${estado.toLowerCase()}`;
@@ -257,9 +282,13 @@ function abrirSeleccionesMundiales(disparador, { alCambiar, configuracionValida 
       card.querySelector('.interruptor-estado').textContent = activa ? 'ON' : 'OFF';
     });
 
+    const { activos, total } = resumenDraft();
+    const descripcionCantidad = activos === 1
+      ? 'plantel disponible en el draft'
+      : 'planteles disponibles en el draft';
     overlay.querySelector('[data-total-activas]').textContent =
-      `${enabledSquadKeys.size} / ${SQUADS_HISTORICAS_AMPLIADAS.length} activas`;
-    overlay.querySelector('.selecciones-aviso-minimo').hidden = configuracionValida();
+      `${activos} / ${total} ${descripcionCantidad}`;
+    overlay.querySelector('.selecciones-aviso-draft').hidden = configuracionValida();
   };
 
   overlay.addEventListener('click', e => {
@@ -320,6 +349,15 @@ function abrirSeleccionesMundiales(disparador, { alCambiar, configuracionValida 
   overlay.querySelector('.btn-volver-selecciones').focus();
 }
 
+export function abrirUniversoDraft(disparador, { modo = 'almanaque', alCambiar = () => {} } = {}) {
+  const modoActual = () => typeof modo === 'function' ? modo() : modo;
+  abrirSeleccionesMundiales(disparador, {
+    alCambiar,
+    configuracionValida: () => configuracionDraftValida(modoActual()),
+    resumenDraft: () => resumenUniversoDraft(modoActual()),
+  });
+}
+
 export function pantallaHome(root) {
   const nombreGuardado = localStorage.getItem('mundialito-nombre') || '';
 
@@ -353,7 +391,7 @@ export function pantallaHome(root) {
             </div>
           </div>
           <button type="button" id="btn-selecciones-mundiales" class="btn">
-            Seleccionar selecciones mundiales
+            Configurar universo del draft
           </button>
           <button id="btn-crear" class="btn btn-primario">Crear sala</button>
         </section>
@@ -374,8 +412,15 @@ export function pantallaHome(root) {
   const modoSeleccionado = () =>
     root.querySelector('input[name=modo]:checked')?.value || 'almanaque';
   let solicitudEnCurso = false;
-  const configuracionValida = () =>
-    squadsParaModo(modoSeleccionado(), keysActivasOrdenadas()).length >= MINIMO_SQUADS;
+  // enabled_squads limita solo la ruleta del draft. Los rivales del torneo se
+  // reconstruyen siempre desde el universo base completo del modo.
+  const poolDraftConfigurado = () =>
+    squadsParaModo(modoSeleccionado(), keysActivasOrdenadas());
+  const configuracionValida = () => poolDraftConfigurado().length > 0;
+  const resumenDraft = () => ({
+    activos: poolDraftConfigurado().length,
+    total: squadsParaModo(modoSeleccionado()).length,
+  });
   const actualizarDisponibilidadCrear = () => {
     const valida = configuracionValida();
     $('#btn-crear', root).disabled = solicitudEnCurso || !valida;
@@ -414,6 +459,7 @@ export function pantallaHome(root) {
     abrirSeleccionesMundiales(e.currentTarget, {
       alCambiar: actualizarDisponibilidadCrear,
       configuracionValida,
+      resumenDraft,
     });
   });
 

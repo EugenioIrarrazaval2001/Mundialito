@@ -1,8 +1,8 @@
 // Lobby: jugadores esperando, el host reparte los planteles
 
-import { net, miId, MAX_JUGADORES } from '../net/net.js';
+import { net, ONLINE, MAX_JUGADORES } from '../net/net.js';
 import { render, html, esc, $, $$, toast } from './dom.js';
-import { app, soyHost, salirDeSala } from '../main.js';
+import { app, soyHost, salirDeSala, miJugadorId } from '../main.js';
 import { parseModo } from '../engine/engine.js';
 
 // Vive fuera de `dibujar`: Realtime repinta el Lobby durante los updates del
@@ -24,7 +24,11 @@ export function pantallaLobby(root) {
 function dibujar(root) {
   const { room, players } = app.estado;
   const host = soyHost();
-  const esLocal = room.code === 'LOCAL';
+  const jugadorId = miJugadorId();
+  const grupo = app.grupo?.group;
+  const identidadPrincipal = grupo?.displayName || grupo?.display_name || room.group_name || room.code;
+  const esTorneoDeGrupo = Boolean(grupo || room.group_id);
+  const esLocal = !ONLINE || room.code === 'LOCAL' || room.code.startsWith('LOCAL-');
   const iniciandoDraft = iniciosDraftEnCurso.has(room.code);
   const salaLlena = players.length >= MAX_JUGADORES;
   const salaSobrepasada = players.length > MAX_JUGADORES;
@@ -34,8 +38,8 @@ function dibujar(root) {
       <header class="cabecera-sala">
         <button id="btn-salir" class="btn btn-mini" ${iniciandoDraft ? 'disabled' : ''}>← Salir</button>
         <div class="ticket">
-          <span class="ticket-label">CÓDIGO DE SALA</span>
-          <span class="ticket-codigo">${esc(room.code)}</span>
+          <span class="ticket-label">${esTorneoDeGrupo ? 'GRUPO' : 'CÓDIGO DE SALA'}</span>
+          <span class="ticket-codigo ${esTorneoDeGrupo ? 'ticket-grupo' : ''}">${esc(identidadPrincipal)}</span>
         </div>
         <span class="chip-modo">${parseModo(room.modo).modo === 'penales'
           ? '🧤 SOLO PENALES' : '📖 SELECCIONES HISTÓRICAS'}
@@ -43,13 +47,15 @@ function dibujar(root) {
       </header>
 
       <h2 class="titulo-seccion">Vestuario <span class="contador">(${players.length}/${MAX_JUGADORES} ${players.length === 1 ? 'jugador' : 'jugadores'})</span></h2>
-      ${esLocal ? '' : html`<p class="nota centrada">Comparte el código <b>${esc(room.code)}</b> para que los demás jugadores se unan.</p>`}
+      ${esLocal ? '' : html`<p class="nota centrada">${esTorneoDeGrupo
+        ? `Los demás jugadores pueden entrar usando la clave <b>${esc(identidadPrincipal)}</b>.`
+        : `Comparte el código <b>${esc(room.code)}</b> para que los demás jugadores se unan.`}</p>`}
       ${salaLlena && !salaSobrepasada ? '<p class="nota centrada">Sala llena: este es el máximo para un mundial de 32 equipos.</p>' : ''}
       ${salaSobrepasada ? html`<p class="nota centrada error-lobby">Hay ${players.length} jugadores, pero el máximo es ${MAX_JUGADORES}. Deben salir ${players.length - MAX_JUGADORES} antes de empezar.</p>` : ''}
 
       <ul class="lista-jugadores">
         ${players.map((p, i) => html`
-          <li class="jugador-item ${p.id === miId() ? 'soy-yo' : ''}">
+          <li class="jugador-item ${p.id === jugadorId ? 'soy-yo' : ''}">
             <span class="dorsal">${i + 1}</span>
             <span class="nombre-jugador">${esc(p.name)}</span>
             ${p.id === room.host_id ? '<span class="etiqueta-host">DT ANFITRIÓN</span>' : ''}
@@ -78,7 +84,8 @@ function dibujar(root) {
   $$('.btn-kick', root).forEach(b => b.addEventListener('click', async () => {
     const pid = b.dataset.kick;
     const pl = players.find(p => p.id === pid);
-    if (!confirm(`¿Sacar a ${pl?.name ?? 'este jugador'} de la sala? Podrá volver a entrar con el código mientras no haya empezado.`)) return;
+    const formaReingreso = esTorneoDeGrupo ? 'la clave del grupo' : 'el código';
+    if (!confirm(`¿Sacar a ${pl?.name ?? 'este jugador'} de la sala? Podrá volver a entrar con ${formaReingreso} mientras no haya empezado.`)) return;
     b.disabled = true;
     try { await net.eliminarJugador(room.code, pid); }
     catch (e) { b.disabled = false; toast('No se pudo sacar al jugador: ' + e.message, true); }

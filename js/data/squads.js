@@ -2093,3 +2093,23 @@ export const FORMACION_SLOTS = {
   '4-5-1': ['POR', 'LI', 'DFC', 'DFC', 'LD', 'MI', 'MC', 'MCD', 'MC', 'MD', 'DC'],
   '3-4-3': ['POR', 'DFC', 'DFC', 'DFC', 'MI', 'MC', 'MC', 'MD', 'EI', 'DC', 'ED'],
 };
+
+// Fuente única de verdad para la identidad táctica asociada a cada formación.
+// El orden de inserción es también el orden de presentación del setup del draft.
+export const TACTICA_POR_FORMACION = Object.freeze({
+  '4-3-3': Object.freeze({ estilo: 'ofensivo', categoria: 'OFENSIVA', ataque: 1.06, defensa: 0.94 }),
+  '3-4-3': Object.freeze({ estilo: 'ofensivo', categoria: 'OFENSIVA', ataque: 1.06, defensa: 0.94 }),
+  '4-4-2': Object.freeze({ estilo: 'equilibrado', categoria: 'EQUILIBRADA', ataque: 1.00, defensa: 1.00 }),
+  '4-2-3-1': Object.freeze({ estilo: 'equilibrado', categoria: 'EQUILIBRADA', ataque: 1.00, defensa: 1.00 }),
+  '3-5-2': Object.freeze({ estilo: 'equilibrado', categoria: 'EQUILIBRADA', ataque: 1.00, defensa: 1.00 }),
+  '5-3-2': Object.freeze({ estilo: 'defensivo', categoria: 'DEFENSIVA', ataque: 0.94, defensa: 1.06 }),
+  '4-5-1': Object.freeze({ estilo: 'defensivo', categoria: 'DEFENSIVA', ataque: 0.94, defensa: 1.06 }),
+});
+
+export function tacticaDeFormacion(formacion) {
+  return TACTICA_POR_FORMACION[formacion] ?? TACTICA_POR_FORMACION['4-4-2'];
+}
+
+export function estiloDeFormacion(formacion) {
+  return tacticaDeFormacion(formacion).estilo;
+}

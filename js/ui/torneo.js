@@ -3,12 +3,13 @@
 // contra la máquina, la juegas tú: eliges lado al patear y al atajar.
 // Si tu equipo queda eliminado, se acaba el juego para ti.
 
-import { net, miId } from '../net/net.js';
+import { net } from '../net/net.js';
 import { render, html, esc, $, $$, toast } from './dom.js';
-import { app, salirDeSala } from '../main.js';
+import { app, salirDeSala, miJugadorId, refrescarGrupo } from '../main.js';
 import { SQUADS_BY_KEY, JUGADORES_BY_ID, bandera, squadsParaModo } from '../data/squads.js';
 import { simularMundial, parseModo } from '../engine/engine.js';
 import { Rng } from '../engine/rng.js';
+import { copaMundialitoSvg, medallaMundialitoSvg } from './icons.js';
 
 // en players.resultados conviven las tandas (clave del partido) y datos
 // internos con prefijo '_' (_paso/_reproduccion del anfitrión y _t_<clave>
@@ -99,8 +100,12 @@ export function pantallaTorneo(root) {
   const abandonados = (players.find(p => p.id === room.host_id)?.resultados?._abandonados) || [];
   const modo = parseModo(room.modo).modo;
   const soloPenales = modo === 'penales';
-  const poolSala = squadsParaModo(modo, room.enabled_squads);
-  const mundial = simularMundial(room.seed, humanos, overrides, parseModo(room.modo).total, soloPenales, poolSala);
+  // enabled_squads limita únicamente el draft. Los rivales IA siempre salen
+  // del universo base completo del modo, aunque un plantel esté apagado allí.
+  const poolTorneo = squadsParaModo(modo);
+  const mundial = simularMundial(
+    room.seed, humanos, overrides, parseModo(room.modo).total, soloPenales, poolTorneo,
+  );
   marcarPendientes(mundial, abandonados);
   const pasos = construirPasos(mundial);
 
@@ -109,7 +114,7 @@ export function pantallaTorneo(root) {
   const kElim = `mundialito-elim-${room.code}-${room.seed}`;
 
   // el anfitrión maneja el ritmo del mundial; los demás siguen su paso
-  const esHost = room.host_id === miId();
+  const esHost = room.host_id === miJugadorId();
   const hostPaso = () => Math.min(
     Number(app.estado.players.find(p => p.id === room.host_id)?.resultados?._paso ?? 0),
     pasos.length - 1);
@@ -121,7 +126,7 @@ export function pantallaTorneo(root) {
       hostPaso(),
     ), pasos.length - 1)
     : hostPaso();
-  const miEq = 'h-' + miId();
+  const miEq = 'h-' + miJugadorId();
   const pasoElim = calcularEliminacion(mundial, miEq, pasos);
   const pasoEsEliminatorio = indice => !soloPenales && Boolean(pasos[indice]?.eliminatorio);
   const subfaseInicial = () => {
@@ -134,6 +139,60 @@ export function pantallaTorneo(root) {
   let subfase = subfaseInicial();
   let colaPublicacion = Promise.resolve(true);
   let publicandoTransicion = false;
+  let finalizacionGrupoEnCurso = false;
+  let finalizacionGrupoCompleta = Boolean(room.finalized_at || room.finalizedAt || room.status === 'finished');
+
+  const reflejarFinalizacionGrupo = () => {
+    const estado = $('#estado-finalizacion-grupo', root);
+    const reintentar = $('#btn-reintentar-finalizacion', root);
+    const volver = $('#btn-volver-grupo', root);
+    const salir = $('#btn-salir', root);
+    if (estado) estado.textContent = 'Podio guardado. El historial del grupo ya está actualizado.';
+    if (reintentar) reintentar.hidden = true;
+    if (volver) volver.disabled = false;
+    if (salir) salir.disabled = false;
+  };
+
+  const finalizarTorneoDeGrupo = async () => {
+    const contexto = app.grupo;
+    if (!contexto?.group || !contexto?.member || !contexto?.token) return false;
+    if (!esHost) return finalizacionGrupoCompleta;
+    if (finalizacionGrupoCompleta || finalizacionGrupoEnCurso) return finalizacionGrupoCompleta;
+    finalizacionGrupoEnCurso = true;
+    const estado = $('#estado-finalizacion-grupo', root);
+    const reintentar = $('#btn-reintentar-finalizacion', root);
+    const volver = $('#btn-volver-grupo', root);
+    if (estado) estado.textContent = 'Guardando el podio en el historial del grupo…';
+    if (reintentar) reintentar.disabled = true;
+    if (volver) volver.disabled = true;
+    const podio = podioDelMundial(mundial).map(({ place, isAI, teamId, playerId, displayName, squadKey }) => ({
+      place, isAI, teamId, playerId, displayName, squadKey,
+    }));
+    try {
+      await net.grupoFinalizarTorneo({
+        roomCode: room.code,
+        memberId: contexto.member.id,
+        sessionToken: contexto.token,
+        playerId: miJugadorId(),
+        podio,
+      });
+      finalizacionGrupoCompleta = true;
+      if (app.estado?.room) {
+        app.estado.room.status = 'finished';
+        app.estado.room.finalized_at ||= new Date().toISOString();
+      }
+      reflejarFinalizacionGrupo();
+      await refrescarGrupo({ silencioso: true });
+      return true;
+    } catch (e) {
+      if (estado) estado.textContent = 'No se pudo guardar el podio. Reintenta antes de volver al grupo.';
+      if (reintentar) { reintentar.hidden = false; reintentar.disabled = false; }
+      toast('No se pudo finalizar el Mundialito: ' + e.message, true);
+      return false;
+    } finally {
+      finalizacionGrupoEnCurso = false;
+    }
+  };
 
   // Paso y subfase viajan juntos en la fila del anfitrión. Cada escritura parte
   // del JSON más fresco para conservar tandas, ausentes y metadatos existentes.
@@ -145,7 +204,7 @@ export function pantallaTorneo(root) {
   ) => {
     if (!esHost) return Promise.resolve(false);
     const tarea = async () => {
-      const yo = app.estado.players.find(pl => pl.id === miId());
+      const yo = app.estado.players.find(pl => pl.id === miJugadorId());
       if (!yo) return false;
       const actuales = yo.resultados || {};
       const repActual = actuales._reproduccion;
@@ -167,8 +226,8 @@ export function pantallaTorneo(root) {
         resultados._reproduccion = { paso: nuevoPaso, subfase: nuevaSubfase };
       }
       try {
-        await net.actualizarJugador(room.code, miId(), { resultados });
-        const actualizado = app.estado.players.find(pl => pl.id === miId());
+        await net.actualizarJugador(room.code, miJugadorId(), { resultados });
+        const actualizado = app.estado.players.find(pl => pl.id === miJugadorId());
         if (actualizado) {
           const trasRespuesta = actualizado.resultados || {};
           const pasoTrasRespuesta = Number(trasRespuesta._paso ?? -1);
@@ -230,7 +289,7 @@ export function pantallaTorneo(root) {
   const actualizarAusente = (playerId, ausente) => {
     if (!esHost) return Promise.resolve(false);
     const tarea = async () => {
-      const host = app.estado.players.find(pl => pl.id === miId());
+      const host = app.estado.players.find(pl => pl.id === miJugadorId());
       if (!host) return false;
       const abandonadosActuales = new Set(host.resultados?._abandonados || []);
       if (ausente) abandonadosActuales.add(playerId);
@@ -240,8 +299,8 @@ export function pantallaTorneo(root) {
         _abandonados: [...abandonadosActuales],
       };
       try {
-        await net.actualizarJugador(room.code, miId(), { resultados });
-        const actualizado = app.estado.players.find(pl => pl.id === miId());
+        await net.actualizarJugador(room.code, miJugadorId(), { resultados });
+        const actualizado = app.estado.players.find(pl => pl.id === miJugadorId());
         if (actualizado) {
           actualizado.resultados = {
             ...(actualizado.resultados || {}),
@@ -306,6 +365,10 @@ export function pantallaTorneo(root) {
   // cambios que llegan por la sala: tandas nuevas re-simulan; el paso del
   // anfitrión mueve a los espectadores. La tanda abierta escucha sus propios eventos.
   salaHandler = () => {
+    if (app.estado?.room?.status === 'finished' || app.estado?.room?.finalized_at || app.estado?.room?.finalizedAt) {
+      finalizacionGrupoCompleta = true;
+      reflejarFinalizacionGrupo();
+    }
     if (document.querySelector('.overlay-tanda')) return;
     const nuevas = soloTandas(Object.assign({}, ...app.estado.players.map(p => p.resultados || {})));
     const nuevosAband = (app.estado.players.find(p => p.id === room.host_id)?.resultados?._abandonados) || [];
@@ -384,9 +447,9 @@ export function pantallaTorneo(root) {
     render(root, html`
       <div class="torneo">
         <header class="cabecera-sala">
-          ${espectadorForzado ? '' : '<button id="btn-salir" class="btn btn-mini">← Salir</button>'}
-          <div class="ticket"><span class="ticket-label">MUNDIALITO</span>
-            <span class="ticket-codigo">${esc(room.code)}</span></div>
+          ${espectadorForzado ? '' : `<button id="btn-salir" class="btn btn-mini" ${paso === pasos.length - 1 && app.grupo?.group && !finalizacionGrupoCompleta ? 'disabled' : ''}>← Salir</button>`}
+          <div class="ticket"><span class="ticket-label">${app.grupo?.group ? 'GRUPO' : 'MUNDIALITO'}</span>
+            <span class="ticket-codigo ${app.grupo?.group ? 'ticket-grupo' : ''}">${esc(app.grupo?.group?.displayName || app.grupo?.group?.display_name || room.group_name || room.code)}</span></div>
           <div class="controles-torneo">
             ${esHost && !enVivo && !enPausa
               ? '<button id="btn-jugadores" class="btn btn-mini">👥 Jugadores</button>'
@@ -420,6 +483,20 @@ export function pantallaTorneo(root) {
     $('#btn-salir', root)?.addEventListener('click', () => { clearInterval(relojTimer); salirDeSala(); });
     $('#btn-jugadores', root)?.addEventListener('click', () =>
       abrirGestionJugadores(room, actualizarAusente));
+    if (paso === pasos.length - 1 && app.grupo?.group) {
+      const volver = $('#btn-volver-grupo', root);
+      if (volver) {
+        volver.disabled = !finalizacionGrupoCompleta;
+        volver.addEventListener('click', () => salirDeSala({ notificar: false }));
+      }
+      $('#btn-reintentar-finalizacion', root)?.addEventListener('click', finalizarTorneoDeGrupo);
+      if (finalizacionGrupoCompleta) reflejarFinalizacionGrupo();
+      else if (esHost) finalizarTorneoDeGrupo();
+      else {
+        const estado = $('#estado-finalizacion-grupo', root);
+        if (estado) estado.textContent = 'Esperando que el anfitrión guarde el podio…';
+      }
+    }
 
     if (enVivoEliminatoria) {
       const limite = subfase === 'extra' ? 120 : 90;
@@ -428,7 +505,7 @@ export function pantallaTorneo(root) {
       const terminarTramo = async () => {
         if (finalizando) return;
         clearInterval(relojTimer);
-        pintarPartidosHasta(root, pasos[paso].partidos, limite);
+        pintarPartidosHasta(root, mundial, pasos[paso].partidos, limite);
         if (!esHost) {
           const label = $('.reloj-label', root);
           if (label) label.textContent = 'ESPERANDO AL ANFITRIÓN';
@@ -446,6 +523,7 @@ export function pantallaTorneo(root) {
       $('#btn-skip', root)?.addEventListener('click', terminarTramo);
       animarPartidos(
         root,
+        mundial,
         pasos[paso].partidos,
         subfase === 'extra' ? 90 : 0,
         limite,
@@ -459,11 +537,12 @@ export function pantallaTorneo(root) {
         dibujar();
       };
       $('#btn-skip', root)?.addEventListener('click', () => {
-        pintarPartidosHasta(root, pasos[paso].partidos, 90);
+        pintarPartidosHasta(root, mundial, pasos[paso].partidos, 90);
         terminar();
       });
       animarPartidos(
         root,
+        mundial,
         pasos[paso].partidos,
         0,
         90,
@@ -472,7 +551,7 @@ export function pantallaTorneo(root) {
       );
     } else if (enPausa) {
       const minuto = subfase === 'resumen90' ? 90 : 120;
-      pintarPartidosHasta(root, pasos[paso].partidos, minuto);
+      pintarPartidosHasta(root, mundial, pasos[paso].partidos, minuto);
       abrirResumenRonda({
         mundial,
         partidos: pasos[paso].partidos,
@@ -590,6 +669,59 @@ function nombrePlano(mundial, id) {
   return `${s.pais} ${s.anio}`;
 }
 
+function podioDelMundial(mundial) {
+  const terceroId = mundial.tercerPuesto?.ganador || null;
+  return [mundial.campeonId, mundial.subcampeonId, terceroId]
+    .map((id, indice) => {
+      const equipo = mundial.equipos.find(e => e.id === id);
+      if (!equipo) return null;
+      const place = indice + 1;
+      if (!equipo.esIA) {
+        return {
+          place,
+          isAI: false,
+          teamId: equipo.id,
+          playerId: equipo.id.startsWith('h-') ? equipo.id.slice(2) : equipo.id,
+          displayName: equipo.nombre,
+          nombreHtml: `⭐ ${esc(equipo.nombre)}`,
+          detailHtml: 'DT humano',
+        };
+      }
+      const squad = SQUADS_BY_KEY[equipo.squadKey];
+      const displayName = squad ? `${squad.pais} ${squad.anio}` : equipo.nombre;
+      return {
+        place,
+        isAI: true,
+        teamId: equipo.id,
+        displayName,
+        squadKey: equipo.squadKey,
+        nombreHtml: squad ? `${bandera(squad, 22)} ${esc(displayName)}` : esc(displayName),
+        detailHtml: 'Selección histórica · máquina',
+      };
+    })
+    .filter(Boolean);
+}
+
+function podioFinalHTML(mundial) {
+  return podioDelMundial(mundial).map(item => {
+    const clase = item.place === 1 ? 'podio-primero'
+      : item.place === 2 ? 'podio-segundo' : 'podio-tercero';
+    const premio = item.place === 1
+      ? copaMundialitoSvg({ className: 'icono-copa podio-copa', title: 'Copa del Mundialito' })
+      : medallaMundialitoSvg(item.place === 2 ? 'plata' : 'bronce', {
+        className: 'icono-medalla',
+        title: item.place === 2 ? 'Medalla de plata' : 'Medalla de bronce',
+      });
+    return html`
+      <article class="podio-tarjeta ${clase}">
+        <span class="podio-posicion">${item.place}º</span>
+        <div class="podio-premio">${premio}</div>
+        <h3 class="podio-nombre">${item.nombreHtml}</h3>
+        <p class="podio-detalle">${esc(item.detailHtml)}</p>
+      </article>`;
+  }).join('');
+}
+
 // marcador en vivo de una tanda en curso: lo publica el/los DT que la juegan
 // en su fila (clave '_live_<clave>'), y el resto de la sala lo ve actualizarse
 function textoLivePenales(mundial, partido) {
@@ -601,7 +733,55 @@ function textoLivePenales(mundial, partido) {
 
 // ---------- reloj en vivo ----------
 
-function pintarPartidosHasta(root, partidos, minuto) {
+const TIPOS_EXPULSION = new Set(['roja_directa', 'segunda_amarilla']);
+
+function esExpulsion(tipo) {
+  return TIPOS_EXPULSION.has(tipo);
+}
+
+function expulsionesHasta(p, equipoId, hastaMin = Infinity) {
+  return (p.tarjetas || []).filter(tarjeta =>
+    tarjeta.equipoId === equipoId &&
+    tarjeta.minuto <= hastaMin &&
+    esExpulsion(tarjeta.tipo)).length;
+}
+
+function contenidoInferioridad(expulsiones) {
+  if (expulsiones <= 0) return '';
+  const jugadores = Math.max(0, 11 - expulsiones);
+  return `<span class="inferioridad-rojas" aria-hidden="true">${'🟥'.repeat(expulsiones)}</span>` +
+    `<b>${jugadores}</b>`;
+}
+
+function indicadorInferioridadHTML(p, equipoId, lado, hastaMin = Infinity) {
+  const expulsiones = expulsionesHasta(p, equipoId, hastaMin);
+  const jugadores = Math.max(0, 11 - expulsiones);
+  return `<span class="inferioridad-equipo" data-inferioridad="${lado}"` +
+    `${expulsiones ? ` aria-label="${jugadores} jugadores"` : ' hidden'}>` +
+    `${contenidoInferioridad(expulsiones)}</span>`;
+}
+
+function actualizarInferioridad(cont, p, hastaMin) {
+  [['A', p.idA], ['B', p.idB]].forEach(([lado, equipoId]) => {
+    const indicador = $(`[data-inferioridad="${lado}"]`, cont);
+    if (!indicador) return;
+    const expulsiones = expulsionesHasta(p, equipoId, hastaMin);
+    if (Number(indicador.dataset.expulsiones) === expulsiones) return;
+    indicador.dataset.expulsiones = String(expulsiones);
+    if (!expulsiones) {
+      indicador.hidden = true;
+      indicador.removeAttribute('aria-label');
+      indicador.innerHTML = '';
+      return;
+    }
+    const jugadores = Math.max(0, 11 - expulsiones);
+    indicador.hidden = false;
+    indicador.setAttribute('aria-label', `${jugadores} jugadores`);
+    indicador.innerHTML = contenidoInferioridad(expulsiones);
+  });
+}
+
+function pintarPartidosHasta(root, mundial, partidos, minuto) {
   const reloj = $('#reloj', root);
   if (reloj) reloj.textContent = minuto + "'";
   for (let i = 0; i < partidos.length; i++) {
@@ -620,8 +800,17 @@ function pintarPartidosHasta(root, partidos, minuto) {
       void cont.offsetWidth; // reinicia la animación
       cont.classList.add('gol-flash');
     }
+    actualizarInferioridad(cont, p, minutoPartido);
     const timeline = $('.timeline-partido', cont);
-    if (timeline) timeline.innerHTML = timelinePartidoHTML(p, minutoPartido);
+    if (timeline) {
+      const corteAnterior = Number(timeline.dataset.hastaMin);
+      const animarDesde = Number.isFinite(corteAnterior) && corteAnterior <= minutoPartido
+        ? corteAnterior
+        : minutoPartido;
+      const nuevoTimeline = timelinePartidoHTML(mundial, p, minutoPartido, animarDesde);
+      if (timeline.innerHTML !== nuevoTimeline) timeline.innerHTML = nuevoTimeline;
+      timeline.dataset.hastaMin = String(minutoPartido);
+    }
 
     const estado = $('.estado-partido', cont);
     if (estado && p.alargue && minutoPartido >= 90) {
@@ -630,14 +819,14 @@ function pintarPartidosHasta(root, partidos, minuto) {
   }
 }
 
-function animarPartidos(root, partidos, desdeMin, hastaMin, alTerminar, faseAnimacion = 'grupos') {
+function animarPartidos(root, mundial, partidos, desdeMin, hastaMin, alTerminar, faseAnimacion = 'grupos') {
   // En eliminación directa, cada tramo se detiene en su frontera para que el
   // resumen del host habilite explícitamente 91–120 o las tandas.
   let minuto = desdeMin;
-  pintarPartidosHasta(root, partidos, minuto);
+  pintarPartidosHasta(root, mundial, partidos, minuto);
   relojTimer = setInterval(() => {
     minuto++;
-    pintarPartidosHasta(root, partidos, minuto);
+    pintarPartidosHasta(root, mundial, partidos, minuto);
     if (minuto >= hastaMin) {
       clearInterval(relojTimer);
       alTerminar();
@@ -659,8 +848,20 @@ function nombreGoleador(evento) {
   return evento.jugador || nombreJugador(evento.jugadorId);
 }
 
-// Los datos siguen separados (eventos = goles; sustituciones = cambios), y
-// solo se combinan aquí para presentarlos en el orden en que ocurrieron.
+// El motor conserva goles, cambios y disciplina en colecciones separadas.
+// La UI las combina únicamente para una cronología estable y sin spoilers.
+const PRIORIDAD_EVENTO = Object.freeze({
+  segunda_amarilla: 0,
+  roja_directa: 1,
+  cambio: 2,
+  amarilla: 3,
+  gol: 4,
+});
+
+function claveJugadorEvento(evento) {
+  return String(evento.jugadorId || evento.entraId || evento.saleId || '');
+}
+
 function eventosTimeline(p, hastaMin = Infinity) {
   const goles = (p.eventos || []).map((evento, orden) => ({
     ...evento,
@@ -672,28 +873,89 @@ function eventosTimeline(p, hastaMin = Infinity) {
     tipo: 'cambio',
     orden,
   }));
-  return [...goles, ...cambios]
+  const tarjetas = (p.tarjetas || []).map((evento, orden) => ({
+    ...evento,
+    orden,
+  }));
+  const ordenados = [...goles, ...cambios, ...tarjetas]
     .filter(evento => evento.minuto <= hastaMin)
     .sort((a, b) => a.minuto - b.minuto ||
-      (a.tipo === b.tipo ? a.orden - b.orden : a.tipo === 'cambio' ? -1 : 1) ||
-      String(a.equipoId).localeCompare(String(b.equipoId)));
+      (PRIORIDAD_EVENTO[a.tipo] ?? 9) - (PRIORIDAD_EVENTO[b.tipo] ?? 9) ||
+      String(a.tipo).localeCompare(String(b.tipo)) ||
+      String(a.equipoId).localeCompare(String(b.equipoId)) ||
+      claveJugadorEvento(a).localeCompare(claveJugadorEvento(b)) ||
+      a.orden - b.orden);
+
+  let golesA = 0;
+  let golesB = 0;
+  const expulsiones = new Map([[p.idA, 0], [p.idB, 0]]);
+  return ordenados.map(evento => {
+    if (evento.tipo === 'gol') {
+      if (evento.equipoId === p.idA) golesA++;
+      else if (evento.equipoId === p.idB) golesB++;
+      return { ...evento, marcadorA: golesA, marcadorB: golesB };
+    }
+    if (esExpulsion(evento.tipo)) {
+      const cantidad = (expulsiones.get(evento.equipoId) || 0) + 1;
+      expulsiones.set(evento.equipoId, cantidad);
+      return { ...evento, jugadoresRestantes: Math.max(0, 11 - cantidad) };
+    }
+    return evento;
+  });
 }
 
-function textoEventoHTML(evento) {
+function nombreEquipoEvento(mundial, equipoId) {
+  return nombrePlano(mundial, equipoId) || equipoId || 'Equipo';
+}
+
+function textoEventoHTML(evento, mundial, p) {
   if (evento.tipo === 'gol') {
-    return `<span class="evento-icono" aria-hidden="true">⚽</span><b>${esc(nombreGoleador(evento))}</b>`;
+    return `<span class="evento-mayor-cabecera">` +
+      `<span class="evento-icono evento-icono-mayor" aria-hidden="true">⚽</span>` +
+      `<strong>GOL</strong><time>${evento.minuto}'</time></span>` +
+      `<b class="evento-jugador">${esc(nombreGoleador(evento))}</b>` +
+      `<small>${esc(nombreEquipoEvento(mundial, p.idA))} ${evento.marcadorA}–${evento.marcadorB} ` +
+      `${esc(nombreEquipoEvento(mundial, p.idB))}</small>`;
+  }
+  if (evento.tipo === 'roja_directa' || evento.tipo === 'segunda_amarilla') {
+    const esDoble = evento.tipo === 'segunda_amarilla';
+    const icono = esDoble ? '🟨🟥' : '🟥';
+    const titulo = esDoble ? 'SEGUNDA AMARILLA · EXPULSADO' : 'EXPULSADO · ROJA DIRECTA';
+    return `<span class="evento-mayor-cabecera">` +
+      `<span class="evento-icono evento-icono-mayor" aria-hidden="true">${icono}</span>` +
+      `<strong>${titulo}</strong><time>${evento.minuto}'</time></span>` +
+      `<b class="evento-jugador">${esc(nombreJugador(evento.jugadorId))}</b>` +
+      `<small>${esc(nombreEquipoEvento(mundial, evento.equipoId))} queda con ` +
+      `${evento.jugadoresRestantes} jugadores</small>`;
+  }
+  if (evento.tipo === 'amarilla') {
+    return `<span class="evento-icono" aria-hidden="true">🟨</span>` +
+      `<span><b>${esc(nombreJugador(evento.jugadorId))}</b>` +
+      `<small>Tarjeta amarilla · ${esc(nombreEquipoEvento(mundial, evento.equipoId))}</small></span>`;
   }
   return `<span class="evento-icono cambio-icono" aria-hidden="true">⇄</span>` +
     `<span><b>Entra ${esc(nombreJugador(evento.entraId))}</b>` +
-    `<small>Sale ${esc(nombreJugador(evento.saleId))}${evento.puesto ? ` · ${esc(evento.puesto)}` : ''}</small></span>`;
+    `<small>Sale ${esc(nombreJugador(evento.saleId))}${evento.puesto ? ` · ${esc(evento.puesto)}` : ''}` +
+    ` · ${esc(nombreEquipoEvento(mundial, evento.equipoId))}</small></span>`;
 }
 
-function timelinePartidoHTML(p, hastaMin = Infinity) {
+function timelinePartidoHTML(mundial, p, hastaMin = Infinity, animarExpulsionesDesde = Infinity) {
   return eventosTimeline(p, hastaMin).map(evento => {
     const lado = evento.equipoId === p.idB ? 'lado-b' : 'lado-a';
-    return `<div class="timeline-evento ${lado} evento-${evento.tipo}">` +
-      `<span class="timeline-contenido">${textoEventoHTML(evento)}</span>` +
-      `<time>${evento.minuto}'</time></div>`;
+    const esMayor = evento.tipo === 'gol' || esExpulsion(evento.tipo);
+    const claseTipo = {
+      gol: 'evento-gol',
+      cambio: 'evento-cambio',
+      amarilla: 'evento-amarilla',
+      roja_directa: 'evento-roja',
+      segunda_amarilla: 'evento-doble-amarilla',
+    }[evento.tipo] || 'evento-desconocido';
+    const esReciente = esExpulsion(evento.tipo) &&
+      evento.minuto === hastaMin && evento.minuto > animarExpulsionesDesde;
+    return `<div class="timeline-evento ${lado} ${claseTipo} ` +
+      `${esMayor ? 'evento-mayor' : 'evento-menor'}${esReciente ? ' evento-reciente' : ''}">` +
+      `<span class="timeline-contenido">${textoEventoHTML(evento, mundial, p)}</span>` +
+      `${esMayor ? '' : `<time>${evento.minuto}'</time>`}</div>`;
   }).join('');
 }
 
@@ -714,7 +976,7 @@ function nombreEquipo(mundial, id) {
 
 function esMio(mundial, id) {
   const e = mundial.equipos.find(e => e.id === id);
-  return e && e.id === 'h-' + miId();
+  return e && e.id === 'h-' + miJugadorId();
 }
 
 // el partido del usuario siempre se muestra primero
@@ -882,9 +1144,9 @@ function partidoHTML(mundial, p, idx, final) {
     return html`
       <div class="partido ${mio}" data-partido="${idx}">
         <div class="marcador">
-          <span class="equipo">${nombreEquipo(mundial, p.idA)}</span>
+          <span class="equipo">${nombreEquipo(mundial, p.idA)}${indicadorInferioridadHTML(p, p.idA, 'A', 0)}</span>
           <span class="resultado">0 – 0</span>
-          <span class="equipo der">${nombreEquipo(mundial, p.idB)}</span>
+          <span class="equipo der">${nombreEquipo(mundial, p.idB)}${indicadorInferioridadHTML(p, p.idB, 'B', 0)}</span>
         </div>
         <div class="estado-partido" aria-live="polite"></div>
         <div class="timeline-partido" aria-live="polite"></div>
@@ -903,12 +1165,12 @@ function partidoHTML(mundial, p, idx, final) {
   return html`
     <div class="partido ${mio}">
       <div class="marcador">
-        <span class="equipo ${!pendiente && p.ganador === p.idA ? 'ganador' : ''}">${nombreEquipo(mundial, p.idA)}</span>
+        <span class="equipo ${!pendiente && p.ganador === p.idA ? 'ganador' : ''}">${nombreEquipo(mundial, p.idA)}${indicadorInferioridadHTML(p, p.idA, 'A')}</span>
         <span class="resultado">${p.golesA} – ${p.golesB}</span>
-        <span class="equipo der ${!pendiente && p.ganador === p.idB ? 'ganador' : ''}">${nombreEquipo(mundial, p.idB)}</span>
+        <span class="equipo der ${!pendiente && p.ganador === p.idB ? 'ganador' : ''}">${nombreEquipo(mundial, p.idB)}${indicadorInferioridadHTML(p, p.idB, 'B')}</span>
       </div>
       ${notas.length ? `<div class="estado-partido notas">${notas.join(' <span aria-hidden="true">·</span> ')}</div>` : ''}
-      ${eventosTimeline(p).length ? `<div class="timeline-partido">${timelinePartidoHTML(p)}</div>` : ''}
+      ${eventosTimeline(p).length ? `<div class="timeline-partido">${timelinePartidoHTML(mundial, p)}</div>` : ''}
     </div>`;
 }
 
@@ -949,7 +1211,7 @@ function pGol(nivelPateador, nivelArquero, mismoLado, alMedio = false) {
 function abrirTanda(root, mundial, partido, room) {
   if (document.querySelector('.overlay-tanda')) return; // ya está abierta
   const almanaque = parseModo(room.modo).modo === 'almanaque';
-  const miEq = 'h-' + miId();
+  const miEq = 'h-' + miJugadorId();
   const soyA = partido.idA === miEq;
   const eqA = mundial.equipos.find(e => e.id === partido.idA);
   const eqB = mundial.equipos.find(e => e.id === partido.idB);
@@ -980,11 +1242,19 @@ function abrirTanda(root, mundial, partido, room) {
     ].map(conNivelLineup(eq)).filter(jugador => jugador.id));
   };
   const pateadoresPartido = (eq, slotsFinales) => {
-    const finales = Array.isArray(slotsFinales) ? pateadoresDesdeSlots(slotsFinales) : [];
-    return finales.length ? finales : pateadoresOriginales(eq);
+    // Un snapshot presente es la fuente de verdad aunque excepcionalmente quede
+    // vacío: volver al XI original podría reintroducir a un expulsado. El
+    // fallback queda reservado a Solo Penales y resultados legacy sin snapshot.
+    return Array.isArray(slotsFinales)
+      ? pateadoresDesdeSlots(slotsFinales)
+      : pateadoresOriginales(eq);
   };
   const patA = pateadoresPartido(eqA, partido.slotsFinalesA);
   const patB = pateadoresPartido(eqB, partido.slotsFinalesB);
+  if (!patA.length || !patB.length) {
+    toast('No hay pateadores de campo elegibles para iniciar la tanda.', true);
+    return;
+  }
   const gkA = conNivelLineup(eqA)(eqA.lineup.POR[0]);
   const gkB = conNivelLineup(eqB)(eqB.lineup.POR[0]);
 
@@ -1005,7 +1275,7 @@ function abrirTanda(root, mundial, partido, room) {
   document.body.appendChild(div);
 
   // en duelo: mis lados ya elegidos (sobreviven a un refresco) y los del rival
-  let misLados = [...((app.estado.players.find(pl => pl.id === miId())?.resultados || {})[kT] || [])];
+  let misLados = [...((app.estado.players.find(pl => pl.id === miJugadorId())?.resultados || {})[kT] || [])];
   const susLados = () => duelo
     ? ((app.estado.players.find(pl => pl.id === rivalPid)?.resultados || {})[kT] || [])
     : [];
@@ -1040,10 +1310,10 @@ function abrirTanda(root, mundial, partido, room) {
 
   // publica el marcador parcial para que toda la sala lo vea en vivo
   const publicarLive = () => {
-    const yo = app.estado.players.find(pl => pl.id === miId());
+    const yo = app.estado.players.find(pl => pl.id === miJugadorId());
     if (!yo) return;
     yo.resultados = { ...(yo.resultados || {}), ['_live_' + partido.clave]: { a: goles(t.A), b: goles(t.B) } };
-    net.actualizarJugador(room.code, miId(), { resultados: yo.resultados }).catch(() => {});
+    net.actualizarJugador(room.code, miJugadorId(), { resultados: yo.resultados }).catch(() => {});
   };
 
   const marcas = arr => {
@@ -1173,9 +1443,9 @@ function abrirTanda(root, mundial, partido, room) {
     }
     accion = async lado => {
       misLados.push(lado);
-      const yo = app.estado.players.find(pl => pl.id === miId());
+      const yo = app.estado.players.find(pl => pl.id === miJugadorId());
       yo.resultados = { ...(yo.resultados || {}), [kT]: misLados };
-      try { await net.actualizarJugador(room.code, miId(), { resultados: yo.resultados }); }
+      try { await net.actualizarJugador(room.code, miJugadorId(), { resultados: yo.resultados }); }
       catch (e) { toast('No se pudo enviar tu elección: ' + e.message, true); }
       procesar();
     };
@@ -1193,7 +1463,7 @@ function abrirTanda(root, mundial, partido, room) {
     if (guardando) return;
     guardando = true;
     // ambos DTs escriben el mismo resultado: da igual quién llegue primero
-    const yo = app.estado.players.find(pl => pl.id === miId());
+    const yo = app.estado.players.find(pl => pl.id === miJugadorId());
     const { ['_live_' + partido.clave]: _liveFin, ...resto } = (yo.resultados || {});
     const resultados = {
       ...resto,
@@ -1201,7 +1471,7 @@ function abrirTanda(root, mundial, partido, room) {
     };
     yo.resultados = resultados; // actualización optimista para recalcular al tiro
     try {
-      await net.actualizarJugador(room.code, miId(), { resultados });
+      await net.actualizarJugador(room.code, miJugadorId(), { resultados });
       cerrar();
       pantallaTorneo(root);
     } catch (e) {
@@ -1354,19 +1624,25 @@ function construirPasos(mundial) {
     titulo: '🏆 Campeón',
     render: m => {
       const campeon = m.equipos.find(e => e.id === m.campeonId);
-      const s = SQUADS_BY_KEY[campeon.squadKey];
-      const esMioCampeon = campeon.id === 'h-' + miId();
+      const esMioCampeon = campeon.id === 'h-' + miJugadorId();
       return html`
         <div class="celebracion">
           <div class="confeti">🎉🎊⚽🏆</div>
-          <p class="campeon-label">CAMPEÓN DEL MUNDIALITO</p>
-          <h2 class="campeon-nombre">${campeon.esIA
-            ? `${bandera(s, 21)} ${esc(s.pais)} ${s.anio}`
-            : `⭐ ${esc(campeon.nombre)}`}</h2>
+          <p class="campeon-label">PODIO DEL MUNDIALITO</p>
+          <div class="podio-final">${podioFinalHTML(m)}</div>
           ${campeon.esIA
             ? '<p class="campeon-dt">La máquina se quedó con el Mundialito. 😅</p>'
             : `<p class="campeon-dt">${esMioCampeon ? '¡ERES EL CAMPEÓN, DT! 👑' : `DT campeón: <b>${esc(campeon.nombre)}</b> 👑`}</p>`}
-          <p class="subcampeon">Subcampeón: ${nombreEquipo(m, m.subcampeonId)}</p>
+          ${app.grupo?.group ? html`
+            <div class="finalizacion-grupo">
+              <p id="estado-finalizacion-grupo" class="nota" role="status">${app.estado?.room?.status === 'finished'
+                ? 'Podio guardado en el historial del grupo.'
+                : 'Guardando el podio en el historial del grupo…'}</p>
+              <button type="button" id="btn-reintentar-finalizacion" class="btn btn-mini" hidden>Reintentar guardado</button>
+              <button type="button" id="btn-volver-grupo" class="btn btn-primario" ${app.estado?.room?.status === 'finished' ? '' : 'disabled'}>
+                Volver al grupo
+              </button>
+            </div>` : ''}
         </div>
         ${m.goleadores.length ? html`
         <h3 class="titulo-fase chico">Goleadores del torneo</h3>

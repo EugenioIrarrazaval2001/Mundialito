@@ -4,10 +4,10 @@
 // 6 comodines en dos bolsas independientes: 3 para otra selección del mismo
 // Mundial y 3 para la misma selección en otro Mundial.
 
-import { net, miId } from '../net/net.js';
+import { net } from '../net/net.js';
 import { render, html, esc, $, $$, toast } from './dom.js';
-import { app, soyHost, salirDeSala } from '../main.js';
-import { SQUADS, SQUADS_BY_KEY, FORMACIONES, FORMACION_SLOTS, JUGADORES_BY_ID, RESULTADO_MUNDIAL, bandera, estadoPuestoJugador, lineaDePuesto, nivelEnPuesto, puestosJugador, squadsParaModo } from '../data/squads.js';
+import { app, soyHost, salirDeSala, miJugadorId } from '../main.js';
+import { SQUADS, SQUADS_BY_KEY, FORMACION_SLOTS, JUGADORES_BY_ID, RESULTADO_MUNDIAL, TACTICA_POR_FORMACION, bandera, estadoPuestoJugador, estiloDeFormacion, lineaDePuesto, nivelEnPuesto, puestosJugador, squadsParaModo, tacticaDeFormacion } from '../data/squads.js';
 import { lineupDesdeSlots, parseModo } from '../engine/engine.js';
 
 // En Almanaque los candidatos permanecen ocultos; titulares y suplentes revelan
@@ -16,19 +16,17 @@ function nivelesOcultos(room, draft) {
   return parseModo(room.modo).modo === 'almanaque' && !draft.enviado;
 }
 
-// chip de estado del header: antes de empezar muestra el modo; una vez iniciado
-// el draft, formación · estilo · modo (ya fijos, como en el 7a0)
+// Chip de estado del header: antes de empezar muestra el modo; una vez iniciado,
+// la formación muestra su identidad táctica derivada y el modo.
 function chipEstadoTexto(draft, room) {
   const m = parseModo(room.modo).modo;
   const corto = m === 'penales' ? 'SOLO PENALES' : 'SELECCIONES HISTÓRICAS';
   const emoji = m === 'penales' ? '🧤' : '📖';
   if (!draft.iniciado) return `${emoji} ${corto}`;
-  const estilo = { defensivo: 'DEFENSIVO', equilibrado: 'EQUILIBRADO', ofensivo: 'OFENSIVO' }[draft.estilo] || '';
-  return `${draft.formacion} · ${estilo} · ${corto}`;
+  const categoria = tacticaDeFormacion(draft.formacion).categoria;
+  return `${draft.formacion} · ${categoria} · ${corto}`;
 }
 
-const ESTILOS = [['defensivo', 'Defensivo'], ['equilibrado', 'Equilibrado'], ['ofensivo', 'Ofensivo']];
-const ESTILOS_VALIDOS = new Set(ESTILOS.map(([valor]) => valor));
 const PROGRESO_DRAFT_VERSION = 4;
 const COMODINES_POR_TIPO = 3;
 const CUOTAS_BANCA = Object.freeze({ POR: 1, DEF: 2, MED: 2, DEL: 2 });
@@ -41,6 +39,25 @@ const FILAS_CANCHA = [
   ['LI', 'DFC', 'LD'],
   ['POR'],
 ];
+const CATEGORIAS_TACTICAS = Object.freeze([
+  Object.freeze({ categoria: 'OFENSIVA', titulo: 'OFENSIVAS', clase: 'ofensiva' }),
+  Object.freeze({ categoria: 'EQUILIBRADA', titulo: 'EQUILIBRADAS', clase: 'equilibrada' }),
+  Object.freeze({ categoria: 'DEFENSIVA', titulo: 'DEFENSIVAS', clase: 'defensiva' }),
+]);
+const COORDENADAS_MINICANCHA = Object.freeze({
+  POR: Object.freeze({ x: 50, y: 90 }),
+  LI: Object.freeze({ x: 14, y: 70 }),
+  DFC: Object.freeze({ x: 50, y: 70 }),
+  LD: Object.freeze({ x: 86, y: 70 }),
+  MCD: Object.freeze({ x: 50, y: 57 }),
+  MI: Object.freeze({ x: 14, y: 43 }),
+  MC: Object.freeze({ x: 50, y: 45 }),
+  MD: Object.freeze({ x: 86, y: 43 }),
+  MCO: Object.freeze({ x: 50, y: 31 }),
+  EI: Object.freeze({ x: 15, y: 14 }),
+  DC: Object.freeze({ x: 50, y: 13 }),
+  ED: Object.freeze({ x: 85, y: 14 }),
+});
 
 function claveProgresoDraft(room, playerId) {
   if (!room?.code || room.seed == null || !playerId) return null;
@@ -55,10 +72,12 @@ function limpiarProgresoDraft(draft) {
 function guardarProgresoDraft(draft) {
   if (!draft?.storageKey) return;
   if (draft.enviado) { limpiarProgresoDraft(draft); return; }
+  const estilo = estiloDeFormacion(draft.formacion);
+  draft.estilo = estilo;
   const progreso = {
     version: PROGRESO_DRAFT_VERSION,
     formacion: draft.formacion,
-    estilo: draft.estilo,
+    estilo,
     picks: draft.picks.map(p => ({
       id: p.id,
       puesto: p.puesto,
@@ -127,7 +146,6 @@ function restaurarProgresoDraft(base, room) {
   };
   if (!raw || raw.version !== PROGRESO_DRAFT_VERSION ||
       !Object.hasOwn(FORMACION_SLOTS, raw.formacion) ||
-      !ESTILOS_VALIDOS.has(raw.estilo) ||
       !Array.isArray(raw.picks) || !Array.isArray(raw.bench) || !Array.isArray(raw.ofrecidas) ||
       !Number.isInteger(raw.comodinesOtraSeleccion) ||
       raw.comodinesOtraSeleccion < 0 || raw.comodinesOtraSeleccion > COMODINES_POR_TIPO ||
@@ -135,7 +153,7 @@ function restaurarProgresoDraft(base, room) {
       raw.comodinesOtroMundial < 0 || raw.comodinesOtroMundial > COMODINES_POR_TIPO ||
       typeof raw.iniciado !== 'boolean') return invalido();
 
-  const pool = squadsParaModo(parseModo(room.modo).modo, room.enabled_squads);
+  const pool = poolDraftDeSala(room);
   const poolKeys = new Set(pool.map(s => s.key));
   const slots = FORMACION_SLOTS[raw.formacion];
   const slotsUsados = new Set();
@@ -194,7 +212,9 @@ function restaurarProgresoDraft(base, room) {
   const restaurado = {
     ...base,
     formacion: raw.formacion,
-    estilo: raw.estilo,
+    // La formación es la fuente de verdad incluso para snapshots antiguos que
+    // guardaron una combinación formación/estilo hoy imposible.
+    estilo: estiloDeFormacion(raw.formacion),
     picks,
     bench,
     comodinesOtraSeleccion: raw.comodinesOtraSeleccion,
@@ -220,15 +240,20 @@ function restaurarProgresoDraft(base, room) {
 }
 
 export function pantallaDraft(root) {
-  const yo = app.estado.players.find(p => p.id === miId());
+  const yo = app.estado.players.find(p => p.id === miJugadorId());
   const { room } = app.estado;
 
-  const picksIniciales = slotsDesdeLineup(yo.formacion || '4-3-3', yo.lineup);
+  const formacionInicial = Object.hasOwn(FORMACION_SLOTS, yo.formacion) ? yo.formacion : '4-3-3';
+  const picksIniciales = slotsDesdeLineup(formacionInicial, yo.lineup);
   const benchInicial = benchDesdeLineup(yo.lineup, picksIniciales);
   const tieneLineupServidor = Boolean(yo.lineup);
   const base = {
-    formacion: yo.formacion || '4-3-3',
-    estilo: yo.lineup?.estilo || 'equilibrado',
+    formacion: formacionInicial,
+    // Los lineups ya enviados conservan su estilo histórico. Un draft nuevo lo
+    // deriva siempre de la formación, empezando por el default actual 4-3-3.
+    estilo: tieneLineupServidor
+      ? (yo.lineup?.estilo || 'equilibrado')
+      : estiloDeFormacion(formacionInicial),
     picks: picksIniciales,
     bench: benchInicial,
     comodinesOtraSeleccion: COMODINES_POR_TIPO,
@@ -237,8 +262,8 @@ export function pantallaDraft(root) {
     colocando: null,      // { id } elegido, esperando click en XI o banca
     ofrecidas: new Set(), // keys ya ofrecidas, para no repetir
     enviado: yo.ready,
-    // formación y estilo se eligen al principio; al empezar a armar quedan fijos
-    // y el bloque de configuración desaparece para darle espacio a la lista
+    // La formación se elige al principio y determina automáticamente el estilo;
+    // al empezar a armar queda fija y el setup desaparece.
     iniciado: picksIniciales.length > 0 || benchInicial.length > 0 || yo.ready,
     enviando: false,
     storageKey: claveProgresoDraft(room, yo.id),
@@ -256,6 +281,13 @@ export function pantallaDraft(root) {
 // ---------- lógica ----------
 
 function slotsFormacion(draft) { return FORMACION_SLOTS[draft.formacion] || FORMACION_SLOTS['4-3-3']; }
+function aplicarFormacion(draft, formacion) {
+  if (!Object.hasOwn(FORMACION_SLOTS, formacion) ||
+      !Object.hasOwn(TACTICA_POR_FORMACION, formacion)) return false;
+  draft.formacion = formacion;
+  draft.estilo = estiloDeFormacion(formacion);
+  return true;
+}
 function totalTitulares(draft) { return draft.picks.length; }
 function totalBanca(draft) { return draft.bench.length; }
 function totalElegidos(draft) { return totalTitulares(draft) + totalBanca(draft); }
@@ -385,25 +417,35 @@ function elegibles(draft, squad) {
     .map(j => j.id));
 }
 
-// pool de selecciones del modo actual (principal ampliado o históricas en penales)
-function poolSquads() {
-  const { room } = app.estado;
+// La columna enabled_squads se conserva por compatibilidad, pero limita
+// exclusivamente el universo compartido del draft de la sala.
+function poolDraftDeSala(room) {
   return squadsParaModo(parseModo(room.modo).modo, room.enabled_squads);
 }
 
+function poolDraft() {
+  return poolDraftDeSala(app.estado.room);
+}
+
 function sortearOferta(draft, candidatas = null) {
-  let pool = (candidatas ?? poolSquads()).filter(s => !draft.ofrecidas.has(s.key));
-  if (!pool.length) pool = candidatas ?? poolSquads();
+  const universo = candidatas ?? poolDraft();
+  let pool = universo.filter(s => !draft.ofrecidas.has(s.key));
+  if (!pool.length) pool = universo;
+  if (!pool.length) {
+    draft.oferta = null;
+    return null;
+  }
   const s = pool[Math.floor(Math.random() * pool.length)];
   draft.oferta = s;
   draft.ofrecidas.add(s.key);
+  return s;
 }
 
 function mismoMundial(draft) {
-  return poolSquads().filter(s => s.anio === draft.oferta.anio && s.key !== draft.oferta.key);
+  return poolDraft().filter(s => s.anio === draft.oferta.anio && s.key !== draft.oferta.key);
 }
 function mismaSeleccion(draft) {
-  return poolSquads().filter(s => s.pais === draft.oferta.pais && s.key !== draft.oferta.key);
+  return poolDraft().filter(s => s.pais === draft.oferta.pais && s.key !== draft.oferta.key);
 }
 
 // efecto máquina tragamonedas: gira entre selecciones antes de revelar la sorteada
@@ -412,9 +454,14 @@ function girarYSortear(root, draft, candidatas = null) {
   // Una nueva oferta invalida cualquier jugador marcado de la oferta anterior.
   draft.colocando = null;
   draft.preservarScrollLista = false;
-  sortearOferta(draft, candidatas); // el resultado ya está decidido
-  const elegida = draft.oferta;
-  const pool = (candidatas && candidatas.length ? candidatas : poolSquads());
+  const elegida = sortearOferta(draft, candidatas); // el resultado ya está decidido
+  if (!elegida) {
+    draft.girando = false;
+    dibujarEstado(root, draft);
+    toast('No hay planteles habilitados para el draft.', true);
+    return false;
+  }
+  const pool = (candidatas && candidatas.length ? candidatas : poolDraft());
   draft.girando = true;
   dibujarEstado(root, draft);
 
@@ -438,6 +485,7 @@ function girarYSortear(root, draft, candidatas = null) {
     }
   };
   paso();
+  return true;
 }
 
 function promSlots(slots) {
@@ -516,6 +564,103 @@ function agregarBanca(draft, jugador) {
   return suplente;
 }
 
+function porcentajeTactico(factor) {
+  return Math.round((factor - 1) * 100);
+}
+
+function porcentajeVisible(valor) {
+  return `${valor > 0 ? '+' : ''}${valor}%`;
+}
+
+function efectoTacticoHTML(tactica) {
+  const ataque = porcentajeTactico(tactica.ataque);
+  const defensa = porcentajeTactico(tactica.defensa);
+  if (ataque === 0 && defensa === 0) {
+    return '<span class="formacion-efecto-neutro">SIN MODIFICADOR</span>';
+  }
+  return html`
+    <span>ATAQUE <b>${porcentajeVisible(ataque)}</b></span>
+    <span>DEFENSA <b>${porcentajeVisible(defensa)}</b></span>`;
+}
+
+function efectoTacticoAria(tactica) {
+  const describir = (nombre, factor) => {
+    const valor = porcentajeTactico(factor);
+    if (valor === 0) return `${nombre} sin cambio`;
+    return `${nombre} ${valor > 0 ? 'más' : 'menos'} ${Math.abs(valor)} por ciento`;
+  };
+  if (tactica.ataque === 1 && tactica.defensa === 1) return 'sin modificador';
+  return `${describir('ataque', tactica.ataque)}, ${describir('defensa', tactica.defensa)}`;
+}
+
+// La formación deportiva sigue viniendo de FORMACION_SLOTS. Este helper solo
+// traduce cada puesto fino a coordenadas visuales y separa sus repeticiones.
+function posicionesMiniCancha(formacion) {
+  const slots = FORMACION_SLOTS[formacion] || [];
+  const totales = slots.reduce((acc, puesto) => {
+    acc[puesto] = (acc[puesto] || 0) + 1;
+    return acc;
+  }, {});
+  const vistos = {};
+  return slots.map(puesto => {
+    const base = COORDENADAS_MINICANCHA[puesto] || { x: 50, y: 50 };
+    const total = totales[puesto];
+    const indice = vistos[puesto] || 0;
+    vistos[puesto] = indice + 1;
+    const separacion = total >= 3 ? 18 : total === 2 ? 22 : 0;
+    const x = Math.max(7, Math.min(93,
+      base.x + (indice - (total - 1) / 2) * separacion));
+    return { puesto, x, y: base.y };
+  });
+}
+
+function miniCanchaHTML(formacion) {
+  return html`
+    <span class="mini-cancha-tactica" aria-hidden="true">
+      <span class="mini-cancha-mitad"></span>
+      ${posicionesMiniCancha(formacion).map(({ puesto, x, y }) => html`
+        <span class="mini-jugador" style="left:${x}%;top:${y}%">
+          <span>${puesto}</span>
+        </span>`).join('')}
+    </span>`;
+}
+
+function cardFormacionHTML(formacion, draft, claseCategoria) {
+  const tactica = tacticaDeFormacion(formacion);
+  const seleccionada = draft.formacion === formacion;
+  const aria = `${formacion}, formación ${tactica.categoria.toLowerCase()}, ${efectoTacticoAria(tactica)}`;
+  return html`
+    <button type="button"
+      class="formacion-card tactica-${claseCategoria} ${seleccionada ? 'seleccionada' : ''}"
+      data-form="${formacion}"
+      aria-pressed="${seleccionada ? 'true' : 'false'}"
+      aria-label="${esc(aria)}">
+      <span class="formacion-card-cabecera">
+        <strong class="formacion-card-nombre">${formacion}</strong>
+        <span class="formacion-card-categoria">${tactica.categoria}</span>
+      </span>
+      ${miniCanchaHTML(formacion)}
+      <span class="formacion-efecto">${efectoTacticoHTML(tactica)}</span>
+      <span class="formacion-card-check" aria-hidden="true">✓ SELECCIONADA</span>
+    </button>`;
+}
+
+function selectorFormacionesHTML(draft) {
+  const orden = Object.keys(TACTICA_POR_FORMACION);
+  return CATEGORIAS_TACTICAS.map(grupo => {
+    const formaciones = orden.filter(formacion =>
+      tacticaDeFormacion(formacion).categoria === grupo.categoria);
+    const idTitulo = `titulo-tactica-${grupo.clase}`;
+    return html`
+      <section class="formacion-grupo tactica-${grupo.clase}" aria-labelledby="${idTitulo}">
+        <h4 id="${idTitulo}" class="formacion-grupo-titulo">${grupo.titulo}</h4>
+        <div class="formacion-cards">
+          ${formaciones.map(formacion => cardFormacionHTML(formacion, draft, grupo.clase)).join('')}
+        </div>
+      </section>`;
+  }).join('');
+}
+
 // ---------- UI ----------
 
 function dibujarTodo(root, draft) {
@@ -525,8 +670,8 @@ function dibujarTodo(root, draft) {
     <div class="draft">
       <header class="cabecera-sala">
         <button id="btn-salir-draft" class="btn btn-mini" ${draft.enviando ? 'disabled' : ''}>← Salir</button>
-        <div class="ticket"><span class="ticket-label">SALA</span>
-          <span class="ticket-codigo">${esc(room.code)}</span></div>
+        <div class="ticket"><span class="ticket-label">${app.grupo?.group ? 'GRUPO' : 'SALA'}</span>
+          <span class="ticket-codigo ${app.grupo?.group ? 'ticket-grupo' : ''}">${esc(app.grupo?.group?.displayName || app.grupo?.group?.display_name || room.group_name || room.code)}</span></div>
         <div class="sorteo-resultado">
           <span class="sorteo-label">ARMA TU COMBINADO HISTÓRICO</span>
           <span class="sorteo-equipo">
@@ -538,7 +683,7 @@ function dibujarTodo(root, draft) {
         <span class="chip-modo" id="chip-estado">${chipEstadoTexto(draft, room)}</span>
       </header>
 
-      <div class="draft7">
+      <div class="draft7 ${!draft.iniciado ? 'draft7-configuracion' : ''}">
         <section class="panel-izq" id="panel-izq"></section>
         <section class="cancha7" id="cancha7"></section>
         <aside class="panel-box">
@@ -564,6 +709,8 @@ function dibujarTodo(root, draft) {
 
 function dibujarEstado(root, draft) {
   guardarProgresoDraft(draft);
+  const layout = $('.draft7', root);
+  if (layout) layout.classList.toggle('draft7-configuracion', !draft.iniciado);
   const salir = $('#btn-salir-draft', root);
   if (salir) salir.disabled = draft.enviando;
   dibujarPanelIzq(root, draft);
@@ -584,19 +731,14 @@ function dibujarPanelIzq(root, draft) {
   const almanaque = nivelesOcultos(room, draft);
   const zona = $('#panel-izq', root);
   const scrollLista = $('.lista-elegir', zona)?.scrollTop ?? 0;
-  // --- configuración inicial: formación y estilo (solo durante el setup) ---
+  // --- configuración inicial: la formación determina también el estilo ---
   const config = html`
-    <div class="config-bloque">
-      <h4 class="titulo-pos">FORMACIÓN</h4>
-      <div class="grilla-form">
-        ${Object.keys(FORMACIONES).map(f => html`
-          <button class="btn-form ${f === draft.formacion ? 'activo' : ''}" data-form="${f}">${f}</button>`).join('')}
-      </div>
-      <h4 class="titulo-pos">ESTILO</h4>
-      <div class="grilla-form">
-        ${ESTILOS.map(([v, n]) => html`
-          <button class="btn-form ${v === draft.estilo ? 'activo' : ''}" data-estilo="${v}">${n}</button>`).join('')}
-      </div>
+    <div class="formacion-setup">
+      <header class="formacion-setup-cabecera">
+        <h3>ELIGE TU FORMACIÓN</h3>
+        <p>La formación define tu disposición y tu estilo de juego.</p>
+      </header>
+      ${selectorFormacionesHTML(draft)}
     </div>`;
 
   // --- zona principal del panel ---
@@ -611,11 +753,15 @@ function dibujarPanelIzq(root, draft) {
       </button>`;
   } else if (draft.girando) {
     sorteo = '<div class="salio ruleta" id="ruleta"><span class="salio-label">SORTEANDO…</span></div>';
+  } else if (!poolDraft().length) {
+    sorteo = html`
+      <div class="caja-tirar"><p>No hay planteles habilitados para el draft.<br>
+        Sal de la sala y crea una nueva con al menos uno.</p></div>`;
   } else if (!draft.iniciado) {
-    // setup: elige formación y estilo; al empezar a armar quedan fijos y este bloque se va
+    // Setup: la formación define el estilo; al empezar a armar queda fija.
     sorteo = config + html`
-      <div class="caja-tirar"><p>Elige tu <b>formación</b> y tu <b>estilo</b>.<br>
-        Al empezar a armar quedan fijos.</p></div>
+      <div class="caja-tirar"><p>Elige tu <b>formación táctica</b>.<br>
+        Al empezar a armar queda fija.</p></div>
       <button id="btn-tirar" class="btn-tirar">🎲 EMPEZAR A ARMAR</button>`;
   } else if (!draft.oferta) {
     sorteo = html`
@@ -697,17 +843,14 @@ function dibujarPanelIzq(root, draft) {
   draft.preservarScrollLista = false;
 
   // --- listeners ---
-  $$('.btn-form[data-form]', zona).forEach(b => b.addEventListener('click', () => {
-    draft.formacion = b.dataset.form;
-    dibujarEstado(root, draft);
-  }));
-  $$('.btn-form[data-estilo]', zona).forEach(b => b.addEventListener('click', () => {
-    draft.estilo = b.dataset.estilo;
+  $$('.formacion-card[data-form]', zona).forEach(b => b.addEventListener('click', () => {
+    if (!aplicarFormacion(draft, b.dataset.form)) return;
     dibujarEstado(root, draft);
   }));
 
   $('#btn-tirar', zona)?.addEventListener('click', () => {
-    draft.iniciado = true; // a partir de aquí, formación y estilo quedan fijos
+    draft.estilo = estiloDeFormacion(draft.formacion);
+    draft.iniciado = true; // a partir de aquí, la formación táctica queda fija
     girarYSortear(root, draft);
   });
 
@@ -743,12 +886,14 @@ function dibujarPanelIzq(root, draft) {
   $('#btn-listo', zona)?.addEventListener('click', async () => {
     if (draft.enviando || draft.enviado || !completo(draft)) return;
     const { room } = app.estado;
+    const estilo = estiloDeFormacion(draft.formacion);
+    draft.estilo = estilo;
     draft.enviando = true;
     dibujarEstado(root, draft);
     try {
-      await net.actualizarJugador(room.code, miId(), {
+      await net.actualizarJugador(room.code, miJugadorId(), {
         formacion: draft.formacion,
-        lineup: lineupDesdeSlots(draft.picks, draft.estilo, draft.bench),
+        lineup: lineupDesdeSlots(draft.picks, estilo, draft.bench),
         ready: true,
       });
       draft.enviado = true;

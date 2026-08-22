@@ -10,7 +10,7 @@ import {
 import {
   abrirUniversoDraft, keysDraftActivas, configuracionDraftValida, resumenUniversoDraft,
 } from './home.js';
-import { copaMundialitoSvg, medallaMundialitoSvg } from './icons.js';
+import { medallaMundialitoSvg } from './icons.js';
 
 const PIN_VALIDO = /^\d{4,6}$/;
 const PREMIOS = {
@@ -143,12 +143,19 @@ function normalizarPodio(torneo) {
 
 function iconoPremio(place, clase = '') {
   if (place === 1) {
-    return copaMundialitoSvg({ className: clase, title: 'Copa de campeón' });
+    return copaSticker({ className: clase, title: 'Copa de campeón' });
   }
   return medallaMundialitoSvg(place === 3 ? 'bronze' : 'silver', {
     className: clase,
     title: place === 3 ? 'Medalla de bronce' : 'Medalla de plata',
   });
+}
+
+function copaSticker({ className = '', title = 'Copa de campeón', decorative = false } = {}) {
+  const accesibilidad = decorative
+    ? 'alt="" aria-hidden="true"'
+    : `alt="${esc(title)}"`;
+  return `<img class="copa-sticker ${esc(className)}" src="assets/stickerCopa.png" ${accesibilidad} />`;
 }
 
 function fechaTorneo(torneo) {
@@ -635,7 +642,7 @@ function htmlRanking(dashboard) {
             <th scope="col">#</th>
             <th scope="col">Jugador</th>
             <th scope="col" title="Copas de campeón">
-              ${copaMundialitoSvg({ className: 'grupo-ranking-icono', title: 'Copas' })}
+              ${copaSticker({ className: 'grupo-ranking-icono', decorative: true })}
               <span class="sr-only">Copas</span>
             </th>
             <th scope="col" title="Medallas de plata">
@@ -725,7 +732,7 @@ function htmlUltimoCampeon(dashboard) {
     <section class="grupo-ultimo-campeon ${campeon ? '' : 'sin-campeon'}"
       aria-labelledby="titulo-ultimo-campeon">
       <div class="grupo-ultimo-copa">
-        ${copaMundialitoSvg({ className: 'grupo-copa-grande', decorative: true })}
+        ${copaSticker({ className: 'grupo-copa-grande', decorative: true })}
       </div>
       <div>
         <h2 id="titulo-ultimo-campeon">ÚLTIMO CAMPEÓN</h2>

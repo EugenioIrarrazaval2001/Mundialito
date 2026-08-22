@@ -1439,6 +1439,13 @@ function abrirTanda(root, mundial, partido, room) {
   let publicandoEleccion = false;
   let cerrado = false;
   let guardando = false;
+  let avanceTimer = null;
+  let avanceEnCurso = false;
+
+  const cancelarAvancePendiente = () => {
+    if (avanceTimer) clearTimeout(avanceTimer);
+    avanceTimer = null;
+  };
 
   // si el anfitrión marcó ausente a alguno de los dos, la máquina toma la tanda:
   // cierro este duelo y dejo que el Mundial siga con el resultado automático
@@ -1458,6 +1465,7 @@ function abrirTanda(root, mundial, partido, room) {
   if (duelo) document.addEventListener('sala:cambio', tandaHandler);
   const cerrar = () => {
     cerrado = true;
+    cancelarAvancePendiente();
     if (duelo) document.removeEventListener('sala:cambio', tandaHandler);
     div.remove();
   };
@@ -1505,7 +1513,7 @@ function abrirTanda(root, mundial, partido, room) {
           <div class="tanda-fila"><span class="tanda-eq">${etiquetaRival}</span>
             <b class="tanda-score">${goles(suyas)}</b>${marcas(suyas, totalMarcas)}</div>
         </div>
-        <p class="tanda-msg ${opts.narracion?.clase || ''}" aria-live="polite">${msg}</p>
+        <p class="tanda-msg ${opts.narracion?.clase || ''} ${opts.resultado ? 'tanda-msg-resultado' : ''}" aria-live="polite">${msg}</p>
         <div class="arco-zona ${opts.eleccion ? `eligiendo-${opts.eleccion}` : 'mostrando-resultado'}">
           <div class="arco ${opts.eleccion ? 'arco-interactivo' : ''}">
             <span class="golero ${opts.golero || ''}">🧤</span>
@@ -1515,6 +1523,7 @@ function abrirTanda(root, mundial, partido, room) {
           ${opts.verdict ? `<div class="verdict ${opts.verdictClase || ''}">${opts.verdict}</div>` : ''}
         </div>
         <div class="tanda-botones">
+          ${opts.resultado ? `<button id="tanda-siguiente-penal" class="btn btn-primario btn-grande">${opts.resultadoFinal ? 'VER RESULTADO' : 'SIGUIENTE PENAL'}</button>` : ''}
           ${opts.continuar ? '<button id="tanda-continuar" class="btn btn-primario btn-grande">Continuar ▶</button>' : ''}
         </div>
       </div>`;
@@ -1525,7 +1534,27 @@ function abrirTanda(root, mundial, partido, room) {
       $$('[data-zona-penal]', div).forEach(btn => { btn.disabled = true; });
       if (cb) cb(b.dataset.zonaPenal);
     }));
+    $('#tanda-siguiente-penal', div)?.addEventListener('click', avanzarResultado);
     $('#tanda-continuar', div)?.addEventListener('click', guardar);
+  }
+
+  function avanzarResultado() {
+    if (cerrado || !animando || avanceEnCurso) return;
+    avanceEnCurso = true;
+    cancelarAvancePendiente();
+    const boton = $('#tanda-siguiente-penal', div);
+    if (boton) {
+      boton.disabled = true;
+      boton.setAttribute('aria-busy', 'true');
+    }
+    animando = false;
+    procesar();
+  }
+
+  function pausarTrasResultado() {
+    avanceEnCurso = false;
+    cancelarAvancePendiente();
+    avanceTimer = setTimeout(avanzarResultado, 15000);
   }
 
   function resolver(pateaA, zonaTiro, zonaArquero, resultado) {
@@ -1542,13 +1571,15 @@ function abrirTanda(root, mundial, partido, room) {
     animando = true;
     dibujarTanda(narracionHTML(narracion), {
       narracion,
+      resultado: true,
+      resultadoFinal: Boolean(ganadorTandaInteractiva(t.A, t.B)),
       balon: `${zonaTiro} ${resultado.desenlace}${esPanenkaLeida ? ' panenka-leida' : ''}`,
       golero: `${zonaArquero} ${resultado.arqueroAdivino ? 'adivino' : 'errado'}`,
       verdict: esPanenkaLeida ? '¡TE LEYERON!' : resultado.gol ? '¡GOL!' : resultado.desenlace === 'atajada' ? '¡ATAJADA!' : '¡FALLÓ!',
       verdictClase: narracion.clase,
       turno: { mio: pateoYo, label: etiquetaEquipo(pateaA ? eqA : eqB) },
     });
-    setTimeout(() => { animando = false; if (!cerrado) procesar(); }, 1500);
+    pausarTrasResultado();
   }
 
   const eleccionNormalizada = (valor, esTiro) => {
@@ -1644,6 +1675,7 @@ function abrirTanda(root, mundial, partido, room) {
   }
 
   function terminar() {
+    cancelarAvancePendiente();
     const gm = goles(soyA ? t.A : t.B);
     const gr = goles(soyA ? t.B : t.A);
     dibujarTanda(gm > gr ? '🏆 ¡GANASTE LA TANDA, DT!' : '😔 Perdiste la tanda…',

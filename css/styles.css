@@ -2490,10 +2490,6 @@ body:has(.overlay-resumen-ronda) { overflow: hidden; }
 }
 .penal-opcion:disabled { cursor: wait; opacity: 0.72; transform: none; }
 .penal-opcion-icono { font-size: 1.22rem; line-height: 1; }
-.penal-opcion-panenka {
-  background: rgba(112, 61, 34, 0.88);
-  color: #fff2cf;
-}
 .penal-opcion-arquero { font-size: 0.76rem; }
 
 .verdict {
@@ -2892,6 +2888,14 @@ body:has(.overlay-resumen-ronda) { overflow: hidden; }
   width: 1.15em; height: 1.35em;
   overflow: visible;
   vertical-align: -0.3em;
+}
+
+.copa-sticker {
+  display: inline-block;
+  max-width: 100%;
+  object-fit: contain;
+  vertical-align: middle;
+  filter: drop-shadow(0 2px 1px rgba(0,0,0,0.2));
 }
 
 .copa-svg-sombra { fill: rgba(0,0,0,0.28); }
@@ -4627,6 +4631,39 @@ select:focus {
 .tanda-msg.panenka-leida .tanda-msg-titulo { color: var(--dorado-claro); }
 .tanda-msg.fallo .tanda-msg-titulo { color: #ef9ba2; }
 
+/* Resultado de cada penal: conserva la narración existente, pero le da una
+   pausa visual legible antes de pasar al siguiente turno. */
+.tanda-msg-resultado {
+  min-height: 108px;
+  margin: 13px 0 10px;
+  padding: 15px 16px;
+  border: 1px solid rgba(255,248,232,0.72);
+  border-left: 6px solid var(--dorado-claro);
+  background: rgba(7,31,27,0.9);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06), 0 7px 16px rgba(0,0,0,0.24);
+  gap: 6px;
+}
+
+.tanda-msg-resultado .tanda-msg-titulo {
+  color: var(--crema-luz);
+  font-size: clamp(1.25rem, 5vw, 1.62rem);
+  line-height: 1;
+}
+
+.tanda-msg-resultado .tanda-msg-detalle {
+  font-size: clamp(0.92rem, 3.8vw, 1.05rem);
+  font-weight: 650;
+  line-height: 1.32;
+}
+
+.tanda-msg-resultado.gol { border-left-color: #50a66a; background: linear-gradient(100deg, rgba(18,82,49,0.96), rgba(7,31,27,0.92)); }
+.tanda-msg-resultado.atajada,
+.tanda-msg-resultado.panenka-leida { border-left-color: var(--dorado-claro); background: linear-gradient(100deg, rgba(109,77,13,0.93), rgba(7,31,27,0.93)); }
+.tanda-msg-resultado.fallo { border-left-color: #e27d89; background: linear-gradient(100deg, rgba(103,31,41,0.95), rgba(7,31,27,0.93)); }
+.tanda-msg-resultado.gol-panenka { border-left-color: #f1bf82; background: linear-gradient(100deg, rgba(112,61,34,0.96), rgba(7,31,27,0.93)); }
+
+#tanda-siguiente-penal { min-width: min(100%, 280px); }
+
 .arco-zona {
   height: 232px;
   margin-top: 6px;
@@ -4658,11 +4695,6 @@ select:focus {
   box-shadow: inset 0 0 0 2px rgba(255,255,255,0.04), 0 3px 0 rgba(0,0,0,0.42);
   color: var(--crema-luz);
   font-size: 0.72rem;
-}
-
-.penal-opcion-panenka {
-  background: rgba(143,41,53,0.86);
-  border-color: #e7b0a7;
 }
 
 .penal-opcion-arquero { font-size: 0.82rem; }
@@ -5102,6 +5134,9 @@ select:focus {
   .marca-penal { width: 1.5rem; }
   .tanda-msg { min-height: 49px; margin: 5px 0; font-size: 0.82rem; }
   .tanda-msg-titulo { font-size: 0.98rem; }
+  .tanda-msg-resultado { min-height: 96px; margin: 8px 0; padding: 12px 13px; gap: 5px; }
+  .tanda-msg-resultado .tanda-msg-titulo { font-size: 1.18rem; }
+  .tanda-msg-resultado .tanda-msg-detalle { font-size: 0.9rem; }
   .arco-zona { width: 100%; height: 218px; margin-bottom: 3px; }
   .arco { width: calc(100% - 12px); height: 154px; }
   .penal-opciones { inset: 5px; gap: 5px; }

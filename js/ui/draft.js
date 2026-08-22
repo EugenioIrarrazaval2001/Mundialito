@@ -6,7 +6,7 @@
 
 import { net } from '../net/net.js';
 import { render, html, esc, $, $$, toast } from './dom.js';
-import { app, soyHost, salirDeSala, miJugadorId } from '../main.js';
+import { app, soyHost, miJugadorId } from '../main.js';
 import { SQUADS, SQUADS_BY_KEY, FORMACION_SLOTS, JUGADORES_BY_ID, RESULTADO_MUNDIAL, TACTICA_POR_FORMACION, bandera, estadoPuestoJugador, estiloDeFormacion, lineaDePuesto, nivelEnPuesto, puestosJugador, squadsParaModo, tacticaDeFormacion } from '../data/squads.js';
 import { lineupDesdeSlots, parseModo } from '../engine/engine.js';
 
@@ -32,31 +32,38 @@ const COMODINES_POR_TIPO = 3;
 const CUOTAS_BANCA = Object.freeze({ POR: 1, DEF: 2, MED: 2, DEL: 2 });
 const SLOTS_BANCA = Object.freeze(['POR', 'DEF', 'DEF', 'MED', 'MED', 'DEL', 'DEL']);
 const TOTAL_BANCA = SLOTS_BANCA.length;
-const FILAS_CANCHA = [
-  ['EI', 'DC', 'ED'],
-  ['MI', 'MCO', 'MD'],
-  ['MC', 'MCD'],
-  ['LI', 'DFC', 'LD'],
-  ['POR'],
-];
+// Filas exclusivamente visuales: no cambian la formación ni el slot que cada
+// botón representa. MI/MC/MCD/MD comparten mediocampo; solo MCO se adelanta.
+const FILAS_CANCHA = Object.freeze([
+  Object.freeze({ puestos: Object.freeze(['EI', 'DC', 'ED']), miniY: 14 }),
+  Object.freeze({ puestos: Object.freeze(['MCO']), miniY: 31 }),
+  Object.freeze({ puestos: Object.freeze(['MI', 'MC', 'MCD', 'MD']), miniY: 48 }),
+  Object.freeze({ puestos: Object.freeze(['LI', 'DFC', 'LD']), miniY: 70 }),
+  Object.freeze({ puestos: Object.freeze(['POR']), miniY: 90 }),
+]);
+const ORDEN_HORIZONTAL_PUESTO = Object.freeze({
+  LI: 0, MI: 0, EI: 0,
+  DFC: 1, MC: 1, MCD: 1, MCO: 1, DC: 1,
+  LD: 2, MD: 2, ED: 2,
+});
 const CATEGORIAS_TACTICAS = Object.freeze([
   Object.freeze({ categoria: 'OFENSIVA', titulo: 'OFENSIVAS', clase: 'ofensiva' }),
   Object.freeze({ categoria: 'EQUILIBRADA', titulo: 'EQUILIBRADAS', clase: 'equilibrada' }),
   Object.freeze({ categoria: 'DEFENSIVA', titulo: 'DEFENSIVAS', clase: 'defensiva' }),
 ]);
 const COORDENADAS_MINICANCHA = Object.freeze({
-  POR: Object.freeze({ x: 50, y: 90 }),
-  LI: Object.freeze({ x: 14, y: 70 }),
-  DFC: Object.freeze({ x: 50, y: 70 }),
-  LD: Object.freeze({ x: 86, y: 70 }),
-  MCD: Object.freeze({ x: 50, y: 57 }),
-  MI: Object.freeze({ x: 14, y: 43 }),
-  MC: Object.freeze({ x: 50, y: 45 }),
-  MD: Object.freeze({ x: 86, y: 43 }),
-  MCO: Object.freeze({ x: 50, y: 31 }),
-  EI: Object.freeze({ x: 15, y: 14 }),
-  DC: Object.freeze({ x: 50, y: 13 }),
-  ED: Object.freeze({ x: 85, y: 14 }),
+  POR: Object.freeze({ y: 90 }),
+  LI: Object.freeze({ y: 70 }),
+  DFC: Object.freeze({ y: 70 }),
+  LD: Object.freeze({ y: 70 }),
+  MI: Object.freeze({ y: 48 }),
+  MC: Object.freeze({ y: 48 }),
+  MCD: Object.freeze({ y: 48 }),
+  MD: Object.freeze({ y: 48 }),
+  MCO: Object.freeze({ y: 31 }),
+  EI: Object.freeze({ y: 14 }),
+  DC: Object.freeze({ y: 14 }),
+  ED: Object.freeze({ y: 14 }),
 });
 
 function claveProgresoDraft(room, playerId) {
@@ -488,8 +495,17 @@ function girarYSortear(root, draft, candidatas = null) {
   return true;
 }
 
-function promSlots(slots) {
-  return slots.length ? Math.round(slots.reduce((a, s) => a + s.nivel, 0) / slots.length) : null;
+function promNiveles(niveles) {
+  return niveles.length ? Math.round(niveles.reduce((suma, nivel) => suma + nivel, 0) / niveles.length) : null;
+}
+
+function promSlots(slots) { return promNiveles(slots.map(slot => slot.nivel)); }
+
+function promBanca(draft) {
+  const niveles = draft.bench
+    .map(suplente => JUGADORES_BY_ID[suplente.id]?.nivel)
+    .filter(Number.isFinite);
+  return promNiveles(niveles);
 }
 
 function resumenPuestos(jugador, almanaque = false) {
@@ -593,25 +609,36 @@ function efectoTacticoAria(tactica) {
   return `${describir('ataque', tactica.ataque)}, ${describir('defensa', tactica.defensa)}`;
 }
 
-// La formación deportiva sigue viniendo de FORMACION_SLOTS. Este helper solo
-// traduce cada puesto fino a coordenadas visuales y separa sus repeticiones.
+function ordenarFilaVisual(slots) {
+  return [...slots].sort((a, b) =>
+    (ORDEN_HORIZONTAL_PUESTO[a.puesto] ?? 1) - (ORDEN_HORIZONTAL_PUESTO[b.puesto] ?? 1) ||
+    a.i - b.i);
+}
+
+function filasVisualesCancha(slots) {
+  return FILAS_CANCHA.map(fila => ({
+    ...fila,
+    slots: ordenarFilaVisual(slots.filter(slot => fila.puestos.includes(slot.puesto))),
+  })).filter(fila => fila.slots.length);
+}
+
+function coordenadaHorizontalMini(indice, total) {
+  if (total <= 1) return 50;
+  // Deja margen para círculos de 21px en móvil y reparte cada línea simétrica.
+  const margen = 14;
+  return margen + (indice * (100 - 2 * margen)) / (total - 1);
+}
+
+// FORMACION_SLOTS sigue siendo la fuente de identidad y de slotIndex. Esta
+// función solo reutiliza las mismas filas visuales de la cancha grande.
 function posicionesMiniCancha(formacion) {
-  const slots = FORMACION_SLOTS[formacion] || [];
-  const totales = slots.reduce((acc, puesto) => {
-    acc[puesto] = (acc[puesto] || 0) + 1;
-    return acc;
-  }, {});
-  const vistos = {};
-  return slots.map(puesto => {
-    const base = COORDENADAS_MINICANCHA[puesto] || { x: 50, y: 50 };
-    const total = totales[puesto];
-    const indice = vistos[puesto] || 0;
-    vistos[puesto] = indice + 1;
-    const separacion = total >= 3 ? 18 : total === 2 ? 22 : 0;
-    const x = Math.max(7, Math.min(93,
-      base.x + (indice - (total - 1) / 2) * separacion));
-    return { puesto, x, y: base.y };
-  });
+  const slots = (FORMACION_SLOTS[formacion] || []).map((puesto, i) => ({ puesto, i }));
+  return filasVisualesCancha(slots).flatMap(fila =>
+    fila.slots.map((slot, indice) => ({
+      puesto: slot.puesto,
+      x: coordenadaHorizontalMini(indice, fila.slots.length),
+      y: COORDENADAS_MINICANCHA[slot.puesto]?.y ?? fila.miniY,
+    })));
 }
 
 function miniCanchaHTML(formacion) {
@@ -669,7 +696,6 @@ function dibujarTodo(root, draft) {
   render(root, html`
     <div class="draft">
       <header class="cabecera-sala">
-        <button id="btn-salir-draft" class="btn btn-mini" ${draft.enviando ? 'disabled' : ''}>← Salir</button>
         <div class="ticket"><span class="ticket-label">${app.grupo?.group ? 'GRUPO' : 'SALA'}</span>
           <span class="ticket-codigo ${app.grupo?.group ? 'ticket-grupo' : ''}">${esc(app.grupo?.group?.displayName || app.grupo?.group?.display_name || room.group_name || room.code)}</span></div>
         <div class="sorteo-resultado">
@@ -695,14 +721,6 @@ function dibujarTodo(root, draft) {
     </div>
   `);
 
-  $('#btn-salir-draft', root).addEventListener('click', () => {
-    if (draft.enviando) return;
-    if (totalElegidos(draft) && !confirm(
-      'Si sales, pierdes el equipo que llevas armado y vuelves al menú principal. ¿Seguro?')) return;
-    limpiarProgresoDraft(draft);
-    salirDeSala();
-  });
-
   dibujarEstado(root, draft);
   actualizarRivales(root);
 }
@@ -711,8 +729,6 @@ function dibujarEstado(root, draft) {
   guardarProgresoDraft(draft);
   const layout = $('.draft7', root);
   if (layout) layout.classList.toggle('draft7-configuracion', !draft.iniciado);
-  const salir = $('#btn-salir-draft', root);
-  if (salir) salir.disabled = draft.enviando;
   dibujarPanelIzq(root, draft);
   dibujarCancha(root, draft);
   dibujarBox(root, draft);
@@ -912,9 +928,8 @@ function dibujarCancha(root, draft) {
   const colocando = jugadorColocando(draft);
   const pickEn = i => draft.picks.find(p => p.slotIndex === i);
 
-  const filas = FILAS_CANCHA.map(puestosFila => {
-    const slotsFila = slots
-      .filter(s => puestosFila.includes(s.puesto))
+  const filas = filasVisualesCancha(slots).map(({ slots: slotsFilaVisual }) => {
+    const slotsFila = slotsFilaVisual
       .map(({ puesto, i }) => {
         const pick = pickEn(i);
         if (pick) {
@@ -1039,6 +1054,10 @@ function dibujarBox(root, draft) {
 
   const ataque = promSlots(draft.picks.filter(p => ['MED', 'DEL'].includes(p.linea)));
   const defensa = promSlots(draft.picks.filter(p => ['POR', 'DEF'].includes(p.linea)));
+  const banca = promBanca(draft);
+  const totalEquipo = [ataque, defensa, banca].every(Number.isFinite)
+    ? Math.round(ataque * 0.45 + defensa * 0.45 + banca * 0.10)
+    : null;
   const v = x => almanaque ? '?' : (x ?? '—');
 
   const filas = slotsFormacion(draft).map((puesto, i) => {
@@ -1059,7 +1078,10 @@ function dibujarBox(root, draft) {
       <div class="box-cabecera">
         <span class="box-titulo">BOX SCORE · XI ${totalTitulares(draft)}/11</span>
         <span class="box-fuerzas">
-          <b class="atq">${v(ataque)}</b> ATAQUE&nbsp;&nbsp;<b class="dfn">${v(defensa)}</b> DEFENSA
+          <span class="box-fuerza"><b class="atq">${v(ataque)}</b><span>ATAQUE</span></span>
+          <span class="box-fuerza"><b class="dfn">${v(defensa)}</b><span>DEFENSA</span></span>
+          <span class="box-fuerza"><b class="bnc">${v(banca)}</b><span>BANCA</span></span>
+          <span class="box-fuerza box-fuerza-total"><b class="tot">${v(totalEquipo)}</b><span>TOTAL EQUIPO</span></span>
         </span>
       </div>
       ${filas}

@@ -151,6 +151,10 @@ export async function abrirVestuarioGrupo() {
 }
 
 export async function salirDeGrupo() {
+  if (['draft', 'running'].includes(app.estado?.room?.status)) {
+    toast('El Mundialito sigue en curso. Cerrar esta pestaña conserva tu participación para reconectar después.', true);
+    return;
+  }
   const groupId = idGrupo(app.grupo?.group);
   if (app.code) salirDeSala({ volverAlGrupo: false });
   if (groupId) await net.grupoSesionBorrar(groupId);
@@ -175,6 +179,10 @@ export function salirDeSala({ notificar = true, volverAlGrupo = true } = {}) {
   const code = app.code;
   const jugadorId = miJugadorId();
   const status = app.estado?.room?.status;
+  if (notificar && ['draft', 'running'].includes(status)) {
+    toast('El Mundialito sigue en curso. Tu participación se conserva para que puedas reconectar.', true);
+    return;
+  }
   const estabaEnSala = Boolean(code && app.estado?.players?.some(p => p.id === jugadorId));
   detenerHeartbeat();
   if (app.unsub) app.unsub();
@@ -216,6 +224,11 @@ function alCambiarEstado(estado) {
     return;
   }
   const status = estado.room.status;
+  if (status === 'cancelled') {
+    toast('El Mundialito anterior llevaba más de 30 minutos sin jugadores conectados y fue cancelado.', true);
+    salirDeSala({ notificar: false });
+    return;
+  }
   if (status === 'finished') detenerHeartbeat();
   const pantalla = status === 'lobby' ? 'lobby' : status === 'draft' ? 'draft' : 'torneo';
 

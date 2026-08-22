@@ -380,7 +380,7 @@ export function pantallaHome(root) {
         <p class="subtitulo">EL TORNEO DE SELECCIONES HISTÓRICAS</p>
         ${ONLINE ? '' : html`
           <p class="aviso-local">⚠ Modo local de prueba (sin Supabase configurado):
-          puedes jugar solo contra la máquina. Para jugar online con otros jugadores, sigue el README.</p>`}
+          puedes jugar solo contra el Bot. Para jugar online con otros jugadores, sigue el README.</p>`}
       </header>
 
       <div class="home-tarjetas">

@@ -386,8 +386,113 @@ function htmlInicioOpciones() {
       <div class="inicio-acciones">
         <button type="button" class="btn inicio-accion" data-inicio-crear>CREAR GRUPO NUEVO</button>
         <button type="button" class="btn inicio-accion" data-inicio-unir>UNIRSE A GRUPO EXISTENTE</button>
+        <button type="button" class="btn inicio-accion" data-inicio-matematicas>VER LAS MATEMÁTICAS DEL JUEGO</button>
       </div>
     </main>`;
+}
+
+const SECCIONES_MATEMATICAS = Object.freeze([
+  Object.freeze({ titulo: '⚽ GOLES ESPERADOS', parrafos: [
+    'Antes de cada partido, el juego calcula qué tan probable es que cada equipo marque.',
+    'La cantidad de goles sigue un modelo probabilístico de Poisson. Esto significa que el juego no decide de antemano cuántos goles habrá: asigna probabilidades a distintos resultados posibles.',
+    'La esperanza de goles de cada equipo depende principalmente de la diferencia entre su capacidad de ataque y la capacidad defensiva del rival.',
+    'Un equipo con grandes atacantes genera más peligro. Un rival con grandes defensores y un buen arquero reduce ese peligro.',
+    'Si tu ataque supera claramente la defensa rival, tu expectativa de goles aumenta. Si la defensa rival es superior a tu ataque, disminuye.',
+    'Lo mismo se calcula en sentido contrario para estimar los goles que puedes recibir.',
+    'Este modelo no fija el marcador. Simplemente hace que algunos resultados sean más probables que otros.',
+  ] }),
+  Object.freeze({ titulo: '🧤 PENALES', parrafos: [
+    'Cada penal es un duelo entre el pateador y el arquero.',
+    'La probabilidad de convertir depende de la calidad del pateador, la calidad del arquero, el lugar donde se ejecuta el remate y la decisión del arquero.',
+    'Rematar abajo es más seguro, pero si el arquero adivina el lado tiene mejores posibilidades de detenerlo.',
+    'Rematar arriba hace más difícil la atajada, pero también aumenta el riesgo de que el propio pateador falle.',
+    'El arquero debe decidir izquierda, centro o derecha. Adivinar el lado ayuda mucho, pero nunca garantiza una atajada.',
+    'Del mismo modo, lanzarse al lado incorrecto no garantiza que el remate termine en gol: siempre existe una pequeña posibilidad de que el pateador falle.',
+    'Incluso quedarse al medio tiene riesgo. Puede funcionar ante un remate central, pero nunca es una solución segura.',
+    'La Panenka funciona de manera especial: puede castigar a un arquero que se lance, pero si el arquero permanece en el centro puede leer completamente la intención del pateador.',
+    'En resumen: nivel del pateador + nivel del arquero + elección del tiro + elección del arquero + azar determinan el resultado.',
+  ] }),
+  Object.freeze({ titulo: '🧠 ¿QUÉ APORTA CADA LÍNEA?', parrafos: [
+    'Los jugadores no influyen todos de la misma manera.',
+    'Delanteros: aportan principalmente al ataque.',
+    'Defensas: aportan principalmente a la defensa.',
+    'Mediocampistas: son especiales porque participan tanto en el ataque como en la defensa.',
+    'Arquero: influye en la capacidad defensiva del equipo, pero no aumenta directamente su ataque.',
+    'Por eso un mediocampo fuerte puede mejorar al equipo en ambas direcciones, mientras que un gran arquero puede hacerte mucho más difícil de vencer sin convertirte automáticamente en un equipo más goleador.',
+  ] }),
+  Object.freeze({ titulo: '📋 FORMACIONES Y TÁCTICA', parrafos: [
+    'La formación también modifica ligeramente el comportamiento del equipo.',
+    'Las formaciones equilibradas no reciben ventajas ni castigos especiales.',
+    'Las formaciones ofensivas sacrifican una pequeña parte de su capacidad defensiva para aumentar su ataque.',
+    'Las formaciones defensivas hacen lo contrario: protegen mejor, pero reducen ligeramente su capacidad ofensiva.',
+    'Estos efectos son deliberadamente pequeños: los jugadores que elegiste siguen siendo mucho más importantes que la formación por sí sola.',
+  ] }),
+  Object.freeze({ titulo: '🎲 EL AZAR SIGUE EXISTIENDO', parrafos: [
+    'Tener el mejor equipo aumenta tus probabilidades, pero no garantiza ganar.',
+    'Mundialito utiliza un modelo probabilístico: un equipo superior debería ganar más veces si el partido se repitiera muchas veces, pero en un partido individual pueden ocurrir sorpresas.',
+    'Un equipo más débil puede aprovechar sus oportunidades, un favorito puede fallarlas y un arquero puede tener un gran partido.',
+    'Esa incertidumbre es intencional: queremos que construir un gran equipo importe mucho, pero que el fútbol siga siendo fútbol.',
+  ] }),
+  Object.freeze({ titulo: '⭐ EL NIVEL DE UN JUGADOR', parrafos: [
+    'Cada jugador tiene un nivel que representa su calidad dentro de su contexto histórico.',
+    'Ese nivel alimenta la fuerza de la posición que ocupa y, finalmente, la capacidad ofensiva o defensiva del equipo.',
+    'Jugar a un futbolista en una posición natural aprovecha completamente su nivel.',
+    'Si debe adaptarse a una posición compatible, puede existir una penalización.',
+    'Por eso no importa solamente qué jugadores elegiste, sino también dónde los utilizas.',
+  ] }),
+  Object.freeze({ titulo: '🔄 BANCA, CAMBIOS Y EXPULSIONES', parrafos: [
+    'El once inicial no es lo único que importa durante un partido.',
+    'La banca comienza a tener efecto cuando empiezan los cambios. A medida que ingresan suplentes, la calidad de esos jugadores pasa a influir en la fuerza efectiva del equipo.',
+    'Por eso tener una buena banca puede ser importante especialmente a medida que avanza el partido: los jugadores que entran pueden ayudar a mantener o mejorar el nivel del equipo cuando reemplazan a los titulares.',
+    'Las expulsiones tienen el efecto contrario.',
+    'Cuando un equipo queda con un jugador menos, disminuye su capacidad para volver a anotar y, al mismo tiempo, aumenta la posibilidad de que el rival le marque.',
+    'Por eso una tarjeta roja afecta ambos lados del partido: hace al equipo menos peligroso en ataque y más vulnerable en defensa.',
+    'Mundialito no considera simplemente el once inicial durante los 90 minutos. Los cambios, la banca, las expulsiones y el estado real del equipo también influyen en lo que puede ocurrir después.',
+  ] }),
+  Object.freeze({ titulo: '🏆 ¿QUÉ DETERMINA QUIÉN GANA?', parrafos: [
+    'No existe una sola variable que decida un partido.',
+    'El resultado nace de combinar: calidad de tus jugadores + posiciones + formación + ataque + defensa + rival + banca + cambios + expulsiones + decisiones durante el partido + azar.',
+    'En los penales se suma además el duelo directo entre la decisión del pateador y la del arquero.',
+    'La idea de Mundialito es simple: las decisiones buenas deben darte una ventaja real, pero nunca eliminar completamente la incertidumbre del fútbol.',
+  ] }),
+]);
+
+function abrirMatematicasJuego(disparador) {
+  if (document.querySelector('.overlay-matematicas')) return;
+  const overlay = document.createElement('div');
+  const raiz = document.querySelector('#app');
+  overlay.className = 'overlay-matematicas';
+  overlay.innerHTML = html`
+    <section class="panel-matematicas" role="dialog" aria-modal="true" aria-labelledby="titulo-matematicas">
+      <header class="matematicas-cabecera">
+        <div>
+          <p class="matematicas-marca">MUNDIALITO</p>
+          <h1 id="titulo-matematicas">LAS MATEMÁTICAS DEL JUEGO</h1>
+          <p>Entiende qué hay detrás de los goles, las tácticas y los penales.</p>
+        </div>
+        <button type="button" class="btn btn-mini btn-volver-matematicas">← VOLVER</button>
+      </header>
+      <div class="matematicas-secciones">
+        ${SECCIONES_MATEMATICAS.map(seccion => html`
+          <article class="matematicas-tarjeta">
+            <h2>${esc(seccion.titulo)}</h2>
+            ${seccion.parrafos.map(parrafo => `<p>${esc(parrafo)}</p>`).join('')}
+          </article>`).join('')}
+      </div>
+    </section>`;
+  const cerrar = () => {
+    document.removeEventListener('keydown', alTeclado);
+    if (raiz) raiz.inert = false;
+    overlay.remove();
+    disparador?.focus?.();
+  };
+  const alTeclado = evento => { if (evento.key === 'Escape') cerrar(); };
+  overlay.querySelector('.btn-volver-matematicas').addEventListener('click', cerrar);
+  overlay.addEventListener('click', evento => { if (evento.target === overlay) cerrar(); });
+  document.addEventListener('keydown', alTeclado);
+  if (raiz) raiz.inert = true;
+  document.body.appendChild(overlay);
+  overlay.querySelector('.btn-volver-matematicas').focus();
 }
 
 function htmlInicioCrear() {
@@ -527,6 +632,9 @@ export function pantallaInicio(root) {
   });
   $('[data-inicio-unir]', root)?.addEventListener('click', () => {
     inicio.paso = 'unir'; pantallaInicio(root);
+  });
+  $('[data-inicio-matematicas]', root)?.addEventListener('click', evento => {
+    abrirMatematicasJuego(evento.currentTarget);
   });
   root.querySelectorAll('[data-inicio-volver]').forEach(boton => boton.addEventListener('click', () => {
     inicio.paso = boton.dataset.inicioVolver;
@@ -686,7 +794,7 @@ function htmlPodioCompacto(podio) {
             ${iconoPremio(entrada.place, 'grupo-historial-icono')}
             <span class="grupo-podio-lugar">${entrada.place}º</span>
             <strong>${esc(nombreVisible(entrada, '—'))}</strong>
-            ${entrada.human === false ? '<span class="grupo-ia-tag">IA</span>' : ''}
+            ${entrada.human === false ? '<span class="grupo-ia-tag">BOT</span>' : ''}
           </li>`;
       }).join('')}
     </ol>`;
@@ -738,7 +846,7 @@ function htmlUltimoCampeon(dashboard) {
         <h2 id="titulo-ultimo-campeon">ÚLTIMO CAMPEÓN</h2>
         ${campeon ? html`
           <strong>${esc(nombreVisible(campeon, '—'))}</strong>
-          ${campeon.human === false ? '<span class="grupo-ia-tag">IA</span>' : ''}
+          ${campeon.human === false ? '<span class="grupo-ia-tag">BOT</span>' : ''}
         ` : '<p>La copa todavía no tiene dueño.</p>'}
       </div>
     </section>`;

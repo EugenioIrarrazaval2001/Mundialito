@@ -88,12 +88,12 @@ export function formacionesDisponiblesMaquina(squadObj) {
 export function mejorXIMaquina(squadObj, formacion = '4-3-3') {
   const solucion = resolverAsignacionMaquina(squadObj, formacion);
   if (!solucion || solucion.asignacion.length !== 11 || solucion.asignacion.some(a => !a)) {
-    throw new Error(`La IA no puede completar ${formacion} con el plantel ${squadObj.key}.`);
+    throw new Error(`El Bot no puede completar ${formacion} con el plantel ${squadObj.key}.`);
   }
 
   const ids = new Set(solucion.asignacion.map(a => a.jugador.id));
   if (ids.size !== 11) {
-    throw new Error(`El XI de IA para ${squadObj.key} contiene jugadores repetidos.`);
+    throw new Error(`El XI del Bot para ${squadObj.key} contiene jugadores repetidos.`);
   }
 
   const slots = solucion.asignacion.map(({ jugador, nivel }, slotIndex) => {
@@ -181,8 +181,8 @@ export function fuerzaEquipo(equipo) {
   const del = nivelPromedio(equipo.lineup, 'DEL');
   // estilo de juego: ofensivo arriesga (+ataque, -defensa); defensivo al revés
   const estilo = equipo.lineup.estilo || 'equilibrado';
-  const fAtq = estilo === 'ofensivo' ? 1.06 : estilo === 'defensivo' ? 0.94 : 1;
-  const fDef = estilo === 'ofensivo' ? 0.94 : estilo === 'defensivo' ? 1.06 : 1;
+  const fAtq = estilo === 'ofensivo' ? 1.05 : estilo === 'defensivo' ? 0.95 : 1;
+  const fDef = estilo === 'ofensivo' ? 0.95 : estilo === 'defensivo' ? 1.05 : 1;
   return {
     gk, def, med, del,
     ataque: (0.62 * del + 0.38 * med) * fAtq,

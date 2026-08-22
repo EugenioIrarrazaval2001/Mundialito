@@ -109,7 +109,7 @@ function dibujar(root) {
             COMENZAR MUNDIALITO
           </button>
           <p class="nota">${esLocal
-            ? 'Armarás tu equipo de 11 titulares y 7 suplentes a punta de sorteos, y jugarás contra selecciones de la máquina.'
+            ? 'Armarás tu equipo de 11 titulares y 7 suplentes a punta de sorteos, y jugarás contra selecciones controladas por Bots.'
             : 'Cada DT armará 11 titulares y 7 suplentes: en cada turno se sortea una selección histórica y elige un jugador.'}</p>
         </div>` : html`
         <p class="nota centrada esperando">Esperando que el DT anfitrión comience el Mundialito…</p>`}

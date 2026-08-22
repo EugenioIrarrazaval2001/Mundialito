@@ -1001,15 +1001,12 @@ body:has(.overlay-selecciones-mundiales) { overflow: hidden; }
 .evento-amarilla .timeline-contenido { color: #6d5308; }
 
 .evento-mayor {
-  grid-template-columns: minmax(0, 1fr);
   margin-block: 4px;
 }
 .evento-mayor .timeline-contenido {
-  grid-column: 1 / -1;
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  justify-self: stretch;
   gap: 3px;
   width: 100%;
   padding: 9px 12px;
@@ -1017,6 +1014,17 @@ body:has(.overlay-selecciones-mundiales) { overflow: hidden; }
   background: rgba(27, 26, 22, 0.06);
   box-shadow: 3px 3px 0 rgba(27, 26, 22, 0.18);
   text-align: left;
+}
+.evento-mayor.lado-a .timeline-contenido {
+  grid-column: 1;
+  justify-self: stretch;
+  border-left-width: 1px;
+  border-right: 5px solid var(--acento-evento, var(--dorado));
+}
+.evento-mayor.lado-b .timeline-contenido {
+  grid-column: 3;
+  justify-self: stretch;
+  border-left: 5px solid var(--acento-evento, var(--dorado));
 }
 .evento-mayor-cabecera {
   display: grid;
@@ -1041,15 +1049,18 @@ body:has(.overlay-selecciones-mundiales) { overflow: hidden; }
 .evento-jugador { font-size: 0.94rem; line-height: 1.1; }
 .evento-mayor small { font-size: 0.7rem; line-height: 1.15; opacity: 0.78; }
 .evento-gol .timeline-contenido {
+  --acento-evento: #8b6913;
   border-color: #8b6913;
   background: rgba(216, 166, 42, 0.14);
 }
 .evento-roja .timeline-contenido,
 .evento-doble-amarilla .timeline-contenido {
+  --acento-evento: #8b1f23;
   border-color: #8b1f23;
   background: rgba(139, 31, 35, 0.1);
 }
 .evento-doble-amarilla .timeline-contenido { box-shadow: inset 4px 0 0 #b78614, 3px 3px 0 rgba(27, 26, 22, 0.18); }
+.evento-doble-amarilla.lado-a .timeline-contenido { box-shadow: inset -4px 0 0 #b78614, 3px 3px 0 rgba(27, 26, 22, 0.18); }
 .evento-reciente .timeline-contenido { animation: aparecer-expulsion 0.72s ease-out both; }
 @keyframes aparecer-expulsion {
   0% { opacity: 0.25; transform: scale(0.97); box-shadow: 0 0 0 0 rgba(139, 31, 35, 0.45); }
@@ -1894,10 +1905,22 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
   padding-bottom: 10px; margin-bottom: 8px;
 }
 .box-titulo { font-weight: 700; letter-spacing: 0.16em; font-size: 0.78rem; }
-.box-fuerzas { font-size: 0.72rem; letter-spacing: 0.1em; font-weight: 700; opacity: 0.85; }
-.box-fuerzas b { font-family: var(--fuente-display); font-size: 1.3rem; margin-right: 3px; }
+.box-fuerzas {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 12px;
+  font-size: 0.67rem;
+  letter-spacing: 0.08em;
+  font-weight: 700;
+  opacity: 0.88;
+}
+.box-fuerza { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+.box-fuerzas b { font-family: var(--fuente-display); font-size: 1.3rem; flex: none; }
 .box-fuerzas .atq { color: var(--rojo); }
 .box-fuerzas .dfn { color: var(--verde-oscuro); }
+.box-fuerzas .bnc { color: #9a6d14; }
+.box-fuerza-total { padding-left: 7px; border-left: 2px solid var(--dorado-oscuro); }
+.box-fuerzas .tot { color: var(--tinta); font-size: 1.42rem; }
 .box-fila {
   display: grid; grid-template-columns: 40px 1fr auto;
   align-items: center; gap: 8px;
@@ -1984,7 +2007,6 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
   .lado-a .timeline-contenido { align-items: flex-end; }
   .lado-b .timeline-contenido { align-items: flex-start; }
   .evento-cambio .evento-icono { display: none; }
-  .evento-mayor { grid-template-columns: minmax(0, 1fr); }
   .evento-mayor .timeline-contenido {
     align-items: stretch;
     padding: 8px 9px;
@@ -3428,12 +3450,97 @@ body:has(.overlay-resumen-ronda) { overflow: hidden; }
 .panel-ranking-historico .grupo-ultimo-campeon { margin-top: 0; }
 .panel-ranking-historico .grupo-panel { margin-top: 14px; }
 
+.overlay-matematicas {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  overflow-y: auto;
+  padding: max(14px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+    max(14px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  background: rgba(3, 20, 17, 0.84);
+}
+
+.panel-matematicas {
+  width: min(920px, 100%);
+  margin: auto;
+  padding: clamp(17px, 4vw, 34px);
+  background: rgba(8, 42, 31, 0.97);
+  color: var(--crema-luz);
+  border: 1px solid rgba(232, 200, 115, 0.78);
+  box-shadow: 0 18px 46px rgba(0, 0, 0, 0.48);
+}
+
+.matematicas-cabecera {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid rgba(232, 200, 115, 0.42);
+}
+
+.matematicas-marca {
+  margin: 0 0 4px;
+  color: var(--dorado-claro);
+  font-family: var(--fuente-display);
+  font-size: 0.92rem;
+  letter-spacing: 0.14em;
+}
+
+.matematicas-cabecera h1 {
+  margin: 0;
+  color: var(--crema-luz);
+  font-family: var(--fuente-display);
+  font-size: clamp(1.7rem, 6vw, 2.65rem);
+  line-height: 0.98;
+}
+
+.matematicas-cabecera h1 + p {
+  max-width: 620px;
+  margin: 10px 0 0;
+  color: rgba(255, 248, 221, 0.9);
+  font-size: clamp(1rem, 3.7vw, 1.12rem);
+  line-height: 1.42;
+}
+
+.matematicas-secciones {
+  display: grid;
+  gap: 13px;
+  margin-top: 18px;
+}
+
+.matematicas-tarjeta {
+  padding: clamp(15px, 3vw, 22px);
+  background: rgba(248, 239, 204, 0.08);
+  border: 1px solid rgba(232, 200, 115, 0.28);
+}
+
+.matematicas-tarjeta h2 {
+  margin: 0 0 10px;
+  color: var(--dorado-claro);
+  font-family: var(--fuente-display);
+  font-size: clamp(1.15rem, 4.8vw, 1.55rem);
+  line-height: 1.05;
+}
+
+.matematicas-tarjeta p {
+  margin: 0;
+  color: rgba(255, 248, 221, 0.94);
+  font-size: clamp(0.97rem, 3.8vw, 1.08rem);
+  line-height: 1.5;
+}
+
+.matematicas-tarjeta p + p { margin-top: 11px; }
+
 @media (max-width: 700px) {
   .vestuario-planteles { align-items: stretch; flex-direction: column; }
   .vestuario-planteles .btn { width: 100%; }
   .ranking-historico-cabecera { align-items: stretch; flex-direction: column; }
   .ranking-historico-cabecera .btn { width: 100%; }
   .panel-ranking-historico { padding: 13px 10px; }
+  .matematicas-cabecera { align-items: stretch; flex-direction: column; }
+  .matematicas-cabecera .btn { width: 100%; }
+  .panel-matematicas { padding: 18px 14px; }
 }
 
 .finalizacion-grupo {
@@ -4774,6 +4881,40 @@ select:focus {
 }
 
 .tanda-botones .btn { min-width: min(230px, 100%); }
+
+/* Decisión previa: ambas opciones pesan igual y no dan pistas sobre niveles. */
+.tanda-decision-arquero { max-width: min(100%, 540px); }
+
+.decision-arquero-pregunta {
+  max-width: 30rem;
+  margin: 20px auto 16px;
+  font-size: clamp(1rem, 3.8vw, 1.16rem);
+  line-height: 1.46;
+}
+
+.decision-arquero-pregunta strong {
+  color: var(--dorado-claro);
+  overflow-wrap: anywhere;
+}
+
+.decision-arquero-acciones {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: min(100%, 400px);
+  margin-inline: auto;
+}
+
+.decision-arquero-acciones .btn {
+  width: 100%;
+  min-width: 0;
+  min-height: 56px;
+}
+
+.decision-arquero-espera {
+  max-width: 30rem;
+  margin: 22px auto 8px;
+  line-height: 1.45;
+}
 
 /* La final y el podio se leen como una portada de álbum, sin comprimir el podio
    de tres lugares en escritorio. */

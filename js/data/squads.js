@@ -70,12 +70,12 @@ export const CONVERSIONES_PUESTO = Object.freeze({
   DFC: Object.freeze({ LI: -3, LD: -3, MCD: -3 }),
   LD: Object.freeze({ DFC: -3, LI: -4, MD: -3 }),
   MCD: Object.freeze({ DFC: -3, MC: -2 }),
-  MC: Object.freeze({ MCD: -2, MCO: -2, MI: -2, MD: -2 }),
+  MC: Object.freeze({ MCD: -2, MCO: -2, MI: -1, MD: -1 }),
   MCO: Object.freeze({ MC: -2, MI: -2, MD: -2, EI: -2, ED: -2, DC: -3 }),
-  MI: Object.freeze({ MC: -2, MCO: -2, LI: -3, EI: -2, MD: -4 }),
-  MD: Object.freeze({ MC: -2, MCO: -2, LD: -3, ED: -2, MI: -4 }),
-  EI: Object.freeze({ MI: -2, MCO: -2, DC: -3, ED: -3 }),
-  ED: Object.freeze({ MD: -2, MCO: -2, DC: -3, EI: -3 }),
+  MI: Object.freeze({ MC: -1, MCO: -2, LI: -3, EI: -2, MD: -2 }),
+  MD: Object.freeze({ MC: -1, MCO: -2, LD: -3, ED: -2, MI: -2 }),
+  EI: Object.freeze({ MI: -2, MCO: -2, DC: -3, ED: -2 }),
+  ED: Object.freeze({ MD: -2, MCO: -2, DC: -3, EI: -2 }),
   DC: Object.freeze({ MCO: -3, EI: -3, ED: -3 }),
 });
 
@@ -2097,13 +2097,13 @@ export const FORMACION_SLOTS = {
 // Fuente única de verdad para la identidad táctica asociada a cada formación.
 // El orden de inserción es también el orden de presentación del setup del draft.
 export const TACTICA_POR_FORMACION = Object.freeze({
-  '4-3-3': Object.freeze({ estilo: 'ofensivo', categoria: 'OFENSIVA', ataque: 1.06, defensa: 0.94 }),
-  '3-4-3': Object.freeze({ estilo: 'ofensivo', categoria: 'OFENSIVA', ataque: 1.06, defensa: 0.94 }),
+  '4-3-3': Object.freeze({ estilo: 'equilibrado', categoria: 'EQUILIBRADA', ataque: 1.00, defensa: 1.00 }),
+  '3-4-3': Object.freeze({ estilo: 'ofensivo', categoria: 'OFENSIVA', ataque: 1.05, defensa: 0.95 }),
   '4-4-2': Object.freeze({ estilo: 'equilibrado', categoria: 'EQUILIBRADA', ataque: 1.00, defensa: 1.00 }),
   '4-2-3-1': Object.freeze({ estilo: 'equilibrado', categoria: 'EQUILIBRADA', ataque: 1.00, defensa: 1.00 }),
   '3-5-2': Object.freeze({ estilo: 'equilibrado', categoria: 'EQUILIBRADA', ataque: 1.00, defensa: 1.00 }),
-  '5-3-2': Object.freeze({ estilo: 'defensivo', categoria: 'DEFENSIVA', ataque: 0.94, defensa: 1.06 }),
-  '4-5-1': Object.freeze({ estilo: 'defensivo', categoria: 'DEFENSIVA', ataque: 0.94, defensa: 1.06 }),
+  '5-3-2': Object.freeze({ estilo: 'defensivo', categoria: 'DEFENSIVA', ataque: 0.95, defensa: 1.05 }),
+  '4-5-1': Object.freeze({ estilo: 'defensivo', categoria: 'DEFENSIVA', ataque: 0.95, defensa: 1.05 }),
 });
 
 export function tacticaDeFormacion(formacion) {

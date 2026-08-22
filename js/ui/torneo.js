@@ -6,7 +6,7 @@
 import { net } from '../net/net.js';
 import { render, html, esc, $, $$, toast } from './dom.js';
 import { app, salirDeSala, miJugadorId, refrescarGrupo } from '../main.js';
-import { SQUADS_BY_KEY, JUGADORES_BY_ID, bandera, squadsParaModo } from '../data/squads.js';
+import { SQUADS_BY_KEY, JUGADORES_BY_ID, bandera, nivelEnPuesto, squadsParaModo } from '../data/squads.js';
 import {
   simularMundial,
   parseModo,
@@ -18,8 +18,8 @@ import { Rng } from '../engine/rng.js';
 import { medallaMundialitoSvg } from './icons.js';
 
 // en players.resultados conviven las tandas (clave del partido) y datos
-// internos con prefijo '_' (_paso/_reproduccion del anfitrión y _t_<clave>
-// con los lados elegidos en una tanda)
+// internos con prefijo '_' (_paso/_reproduccion del anfitrión, _t_<clave>
+// para lados elegidos y _gk_tanda_<clave> para el arquero de la tanda)
 const soloTandas = obj =>
   Object.fromEntries(Object.entries(obj).filter(([k]) => !k.startsWith('_')));
 
@@ -118,6 +118,7 @@ export function pantallaTorneo(root) {
   const kPaso = `mundialito-paso-${room.code}-${room.seed}`;
   const kVisto = `mundialito-visto-${room.code}-${room.seed}`;
   const kElim = `mundialito-elim-${room.code}-${room.seed}`;
+  const kPodio = `mundialito-podio-${room.code}-${room.seed}`;
 
   // el anfitrión maneja el ritmo del mundial; los demás siguen su paso
   const esHost = room.host_id === miJugadorId();
@@ -126,12 +127,14 @@ export function pantallaTorneo(root) {
     pasos.length - 1);
   const pasoGuardado = sessionStorage.getItem(kPaso);
   const pasoLocal = Number(pasoGuardado);
+  let podioLocal = sessionStorage.getItem(kPodio) === '1';
   let paso = esHost
     ? Math.min(Math.max(
       pasoGuardado !== null && Number.isFinite(pasoLocal) ? pasoLocal : 0,
       hostPaso(),
     ), pasos.length - 1)
     : hostPaso();
+  if (podioLocal) paso = pasos.length - 1;
   const miEq = 'h-' + miJugadorId();
   const pasoElim = calcularEliminacion(mundial, miEq, pasos);
   const pasoEsEliminatorio = indice => !soloPenales && Boolean(pasos[indice]?.eliminatorio);
@@ -152,11 +155,9 @@ export function pantallaTorneo(root) {
     const estado = $('#estado-finalizacion-grupo', root);
     const reintentar = $('#btn-reintentar-finalizacion', root);
     const volver = $('#btn-volver-grupo', root);
-    const salir = $('#btn-salir', root);
     if (estado) estado.textContent = 'Podio guardado. El historial del grupo ya está actualizado.';
     if (reintentar) reintentar.hidden = true;
     if (volver) volver.disabled = false;
-    if (salir) salir.disabled = false;
   };
 
   const finalizarTorneoDeGrupo = async () => {
@@ -390,6 +391,7 @@ export function pantallaTorneo(root) {
         return;
       }
     } else {
+      if (podioLocal && nuevoPaso < pasos.length - 1) return;
       const pasoCambio = nuevoPaso !== paso;
       const nuevaCompartida = pasoEsEliminatorio(nuevoPaso)
         ? subfaseCompartida(app.estado.players, nuevoPaso)
@@ -429,7 +431,6 @@ export function pantallaTorneo(root) {
     // Una vez notificada su eliminación, el DT queda como espectador hasta que
     // aparezca el campeón. Antes de la notificación no ocultamos nada para no
     // adelantar visualmente el resultado de un partido que aún está en vivo.
-    const espectadorForzado = Boolean(sessionStorage.getItem(kElim)) && paso < pasos.length - 1;
     const esEliminatoria = pasoEsEliminatorio(paso);
     const enPausa = esEliminatoria && (subfase === 'resumen90' || subfase === 'resumen120');
     const enVivoEliminatoria = esEliminatoria && (subfase === 'regular' || subfase === 'extra');
@@ -453,7 +454,6 @@ export function pantallaTorneo(root) {
     render(root, html`
       <div class="torneo">
         <header class="cabecera-sala">
-          ${espectadorForzado ? '' : `<button id="btn-salir" class="btn btn-mini" ${paso === pasos.length - 1 && app.grupo?.group && !finalizacionGrupoCompleta ? 'disabled' : ''}>← Salir</button>`}
           <div class="ticket"><span class="ticket-label">${app.grupo?.group ? 'GRUPO' : 'MUNDIALITO'}</span>
             <span class="ticket-codigo ${app.grupo?.group ? 'ticket-grupo' : ''}">${esc(app.grupo?.group?.displayName || app.grupo?.group?.display_name || room.group_name || room.code)}</span></div>
           <div class="controles-torneo">
@@ -486,7 +486,6 @@ export function pantallaTorneo(root) {
       </div>
     `);
 
-    $('#btn-salir', root)?.addEventListener('click', () => { clearInterval(relojTimer); salirDeSala(); });
     $('#btn-jugadores', root)?.addEventListener('click', () =>
       abrirGestionJugadores(room, actualizarAusente));
     if (paso === pasos.length - 1 && app.grupo?.group) {
@@ -579,12 +578,22 @@ export function pantallaTorneo(root) {
         abrirTanda(root, mundial, pend, room);
       } else if (!pend && pasoElim >= 0 && paso >= pasoElim && paso < pasos.length - 1 &&
           !sessionStorage.getItem(kElim)) {
-        // ¿quedé eliminado en este paso? fin del juego
+        const esSubcampeon = perdiFinal(mundial, miEq);
+        const irAlPodio = () => {
+          podioLocal = true;
+          sessionStorage.setItem(kPodio, '1');
+          paso = pasos.length - 1;
+          subfase = null;
+          if (esHost) void cambiarPaso(paso);
+          dibujar();
+        };
+        // La derrota de la Final es subcampeonato, no una eliminación genérica.
         mostrarEliminado(
           root,
           mundial,
           () => sessionStorage.setItem(kElim, '1'),
-          dibujar,
+          esSubcampeon ? irAlPodio : dibujar,
+          { esSubcampeon },
         );
       }
     }
@@ -636,7 +645,7 @@ function abrirGestionJugadores(room, actualizarAusente) {
       <div class="cartel-gestion">
         <p class="elim-titulo">JUGADORES DE LA SALA</p>
         <p class="nota">Si alguien cerró la app y deja el Mundial trancado (por ejemplo, unos
-          penales que no se juegan), márcalo como ausente: la máquina juega sus penales y el
+          penales que no se juegan), márcalo como ausente: el Bot juega sus penales y el
           torneo sigue. Su equipo se queda en el cuadro.</p>
         <ul class="lista-gestion">
           ${app.estado.players.map(p => html`
@@ -645,7 +654,7 @@ function abrirGestionJugadores(room, actualizarAusente) {
               ${p.id === room.host_id
                 ? '<span class="etiqueta-host">ANFITRIÓN</span>'
                 : (aband.has(p.id)
-                  ? `<span class="tag-ausente">ausente · juega la máquina</span>
+                  ? `<span class="tag-ausente">ausente · juega el Bot</span>
                      <button class="btn btn-mini" data-react="${p.id}">↩ Reactivar</button>`
                   : `<button class="btn btn-mini btn-ausente" data-aus="${p.id}">🤖 Marcar ausente</button>`)}
             </li>`).join('')}
@@ -704,7 +713,7 @@ function podioDelMundial(mundial) {
         nombreHtml: squad
           ? `<span class="flag-slot podio-bandera">${bandera(squad, 18)}</span>${esc(displayName)}`
           : esc(displayName),
-        detailHtml: 'Selección histórica · máquina',
+        detailHtml: 'Selección histórica · BOT',
       };
     })
     .filter(Boolean);
@@ -979,7 +988,7 @@ function nombreEquipo(mundial, id) {
   const e = mundial.equipos.find(e => e.id === id);
   if (!e.esIA) return `⭐ <b>${esc(e.nombre)}</b>`;
   const s = SQUADS_BY_KEY[e.squadKey];
-  return `${bandera(s)} ${esc(s.pais)} ${s.anio} <span class="dt ia">· máquina</span>`;
+  return `${bandera(s)} ${esc(s.pais)} ${s.anio} <span class="dt ia">· BOT</span>`;
 }
 
 function esMio(mundial, id) {
@@ -1365,6 +1374,7 @@ function abrirTanda(root, mundial, partido, room) {
   const duelo = !rival.esIA;
   const rivalPid = duelo ? rival.id.slice(2) : null;
   const kT = '_t_' + partido.clave; // mis lados elegidos, guardados en mi fila
+  const kArquero = '_gk_tanda_' + partido.clave;
 
   const nivelLineup = (eq, id) => eq.lineup?.slots?.find(s => s.id === id)?.nivel
     ?? JUGADORES_BY_ID[id]?.nivel ?? 70;
@@ -1406,12 +1416,38 @@ function abrirTanda(root, mundial, partido, room) {
     const id = eq.lineup?.POR?.[0];
     return id ? conNivelLineup(eq)(id) : null;
   };
-  const gkA = arqueroDesdeSlots(eqA, partido.slotsFinalesA);
-  const gkB = arqueroDesdeSlots(eqB, partido.slotsFinalesB);
-  if (!gkA || !gkB) {
+  const arqueroActualA = arqueroDesdeSlots(eqA, partido.slotsFinalesA);
+  const arqueroActualB = arqueroDesdeSlots(eqB, partido.slotsFinalesB);
+  if (!arqueroActualA || !arqueroActualB) {
     toast('No hay un arquero elegible para iniciar la tanda.', true);
     return;
   }
+
+  // La banca del draft guarda id y categoría. Una entrada legacy como string
+  // también sirve si el jugador es realmente POR. Ante datos incompletos, la
+  // tanda conserva el arquero actual en lugar de inventar uno.
+  const arqueroReserva = (eq, actual) => {
+    const reservas = (Array.isArray(eq.lineup?.bench) ? eq.lineup.bench : []).flatMap(suplente => {
+      const id = typeof suplente === 'string' ? suplente : suplente?.id;
+      const jugador = id && JUGADORES_BY_ID[id];
+      const categoriaValida = typeof suplente === 'string' || suplente?.categoria === 'POR';
+      const nivel = jugador?.pos === 'POR' && categoriaValida ? nivelEnPuesto(jugador, 'POR') : null;
+      return jugador && id !== actual.id && Number.isFinite(nivel) ? [{ ...jugador, nivel }] : [];
+    });
+    return reservas.length === 1 ? reservas[0] : null;
+  };
+  const metaA = {
+    actual: arqueroActualA,
+    reserva: arqueroReserva(eqA, arqueroActualA),
+    playerId: eqA.esIA ? null : eqA.id.slice(2),
+  };
+  const metaB = {
+    actual: arqueroActualB,
+    reserva: arqueroReserva(eqB, arqueroActualB),
+    playerId: eqB.esIA ? null : eqB.id.slice(2),
+  };
+  let gkA = arqueroActualA;
+  let gkB = arqueroActualB;
 
   // marcador por equipo real; el equipo A patea primero
   const t = { A: [], B: [] }; // true = gol
@@ -1439,6 +1475,8 @@ function abrirTanda(root, mundial, partido, room) {
   let accion = null;     // callback al elegir lado
   let animando = false;  // no procesar doble durante una animación
   let publicandoEleccion = false;
+  let publicandoArquero = false;
+  let decisionesArqueroListas = false;
   let cerrado = false;
   let guardando = false;
   let avanceTimer = null;
@@ -1455,6 +1493,23 @@ function abrirTanda(root, mundial, partido, room) {
     const aband = (app.estado.players.find(p => p.id === room.host_id)?.resultados?._abandonados) || [];
     return [partido.idA, partido.idB].some(id => aband.includes(id.slice(2)));
   };
+  const resultadosDe = playerId => app.estado.players.find(p => p.id === playerId)?.resultados || {};
+  const requiereDecisionArquero = meta => Boolean(meta.playerId && meta.reserva);
+  const idArqueroDecidido = meta => {
+    if (!requiereDecisionArquero(meta)) return meta.actual.id;
+    const resultados = resultadosDe(meta.playerId);
+    if (!Object.hasOwn(resultados, kArquero)) return null;
+    const id = resultados[kArquero]?.goalkeeperId;
+    // Un id legacy o manipulado no habilita otro jugador: conserva al titular.
+    return id === meta.actual.id || id === meta.reserva.id ? id : meta.actual.id;
+  };
+  const arqueroElegido = meta => idArqueroDecidido(meta) === meta.reserva?.id ? meta.reserva : meta.actual;
+  const decisionesArqueroCompletas = () => [metaA, metaB]
+    .every(meta => !requiereDecisionArquero(meta) || idArqueroDecidido(meta) !== null);
+  const actualizarArquerosTanda = () => {
+    gkA = arqueroElegido(metaA);
+    gkB = arqueroElegido(metaB);
+  };
   const tandaHandler = () => {
     if (cerrado) return;
     if (resultadoGuardado() || hayAusenteEnDuelo()) {
@@ -1462,7 +1517,7 @@ function abrirTanda(root, mundial, partido, room) {
       pantallaTorneo(root);
       return;
     }
-    if (!animando && !publicandoEleccion) procesar();
+    if (!animando && !publicandoEleccion && !publicandoArquero) prepararTanda();
   };
   if (duelo) document.addEventListener('sala:cambio', tandaHandler);
   const cerrar = () => {
@@ -1497,6 +1552,64 @@ function abrirTanda(root, mundial, partido, room) {
 
   const narracionHTML = narracion => `<span class="tanda-msg-titulo">${esc(narracion.titulo)}</span>${narracion.detalles
     .map(detalle => `<span class="tanda-msg-detalle">${esc(detalle)}</span>`).join('')}`;
+
+  function dibujarDecisionArquero() {
+    const miMeta = soyA ? metaA : metaB;
+    const decisionMia = idArqueroDecidido(miMeta);
+    const esperando = duelo && !decisionesArqueroCompletas();
+    const puedoDecidir = requiereDecisionArquero(miMeta) && decisionMia === null;
+    const contenido = puedoDecidir
+      ? `<p class="decision-arquero-pregunta">¿Te interesa cambiar a <strong>${esc(miMeta.actual.nombre)}</strong> por <strong>${esc(miMeta.reserva.nombre)}</strong> para la tanda?</p>
+        <div class="tanda-botones decision-arquero-acciones" role="group" aria-label="Decisión de arquero">
+          <button type="button" class="btn" data-arquero-elegido="${esc(miMeta.reserva.id)}" ${publicandoArquero ? 'disabled' : ''}>SÍ</button>
+          <button type="button" class="btn" data-arquero-elegido="${esc(miMeta.actual.id)}" ${publicandoArquero ? 'disabled' : ''}>NO</button>
+        </div>
+        ${publicandoArquero ? '<p class="decision-arquero-espera" aria-live="polite">Guardando decisión…</p>' : ''}`
+      : esperando
+        ? `<p class="decision-arquero-espera" aria-live="polite">⌛ Esperando la decisión de arquero de ${esc(rival.nombre)}…</p>`
+        : '';
+    div.innerHTML = html`
+      <div class="tanda tanda-decision-arquero">
+        <p class="tanda-titulo">🧤 DECISIÓN DE ARQUERO</p>
+        ${contenido}
+      </div>`;
+    $$('[data-arquero-elegido]', div).forEach(boton => boton.addEventListener('click', () => {
+      if (!publicandoArquero) publicarDecisionArquero(boton.dataset.arqueroElegido);
+    }));
+  }
+
+  async function publicarDecisionArquero(id) {
+    const miMeta = soyA ? metaA : metaB;
+    if (!requiereDecisionArquero(miMeta) || (id !== miMeta.actual.id && id !== miMeta.reserva.id)) return;
+    const yo = app.estado.players.find(pl => pl.id === miJugadorId());
+    if (!yo || publicandoArquero) return;
+    const resultadosPrevios = yo.resultados || {};
+    yo.resultados = { ...resultadosPrevios, [kArquero]: { goalkeeperId: id } };
+    publicandoArquero = true;
+    dibujarDecisionArquero();
+    try {
+      await net.actualizarJugador(room.code, miJugadorId(), { resultados: yo.resultados });
+    } catch (e) {
+      yo.resultados = resultadosPrevios;
+      toast('No se pudo enviar tu decisión de arquero: ' + e.message, true);
+    } finally {
+      publicandoArquero = false;
+    }
+    prepararTanda();
+  }
+
+  function prepararTanda() {
+    if (cerrado || animando || publicandoEleccion || publicandoArquero) return;
+    if (resultadoGuardado() || hayAusenteEnDuelo()) return;
+    if (!decisionesArqueroCompletas()) {
+      decisionesArqueroListas = false;
+      dibujarDecisionArquero();
+      return;
+    }
+    actualizarArquerosTanda();
+    decisionesArqueroListas = true;
+    procesar();
+  }
 
   function dibujarTanda(msg, opts = {}) {
     const mias = soyA ? t.A : t.B;
@@ -1605,7 +1718,8 @@ function abrirTanda(root, mundial, partido, room) {
   };
 
   function procesar() {
-    if (cerrado || animando || publicandoEleccion) return;
+    if (cerrado || animando || publicandoEleccion || publicandoArquero) return;
+    if (!decisionesArqueroListas) return prepararTanda();
     const completas = t.A.length === t.B.length;
     // al mejor de 5: durante los primeros 5, termina apenas la ventaja sea
     // inalcanzable. en muerte súbita (ambos con 5+), solo cuando patearon
@@ -1671,7 +1785,7 @@ function abrirTanda(root, mundial, partido, room) {
       } finally {
         publicandoEleccion = false;
       }
-      procesar();
+      prepararTanda();
     };
     pedirEleccion();
   }
@@ -1705,7 +1819,7 @@ function abrirTanda(root, mundial, partido, room) {
     }
   }
 
-  procesar();
+  prepararTanda();
 }
 
 // ---------- eliminación ----------
@@ -1724,17 +1838,29 @@ function calcularEliminacion(mundial, miEq, pasos) {
   return -1;
 }
 
-function mostrarEliminado(root, mundial, marcar, alSeguir) {
+function perdiFinal(mundial, miEq) {
+  const final = mundial.llaves
+    .find(ronda => ronda.nombre === 'Final')?.partidos
+    .find(partido => partido.idA === miEq || partido.idB === miEq);
+  return Boolean(final?.ganador && final.ganador !== miEq);
+}
+
+function mostrarEliminado(root, mundial, marcar, alSeguir, { esSubcampeon = false } = {}) {
   if (document.querySelector('.overlay-elim')) return;
   marcar();
+  const titulo = esSubcampeon ? 'SUBCAMPEÓN 🥈' : 'ELIMINADO';
+  const texto = esSubcampeon
+    ? 'Llegaste hasta la Final.<br>Esta vez la copa se escapó, DT.'
+    : 'Tu combinado quedó fuera del Mundialito.<br>Se acabó el juego para ti, DT. 😔';
+  const boton = esSubcampeon ? 'VER PODIO' : '📺 Verlo por TV';
   const div = document.createElement('div');
   div.className = 'overlay-elim';
   div.innerHTML = html`
     <div class="cartel-elim" role="dialog" aria-modal="true" aria-labelledby="titulo-eliminado">
-      <p class="elim-titulo" id="titulo-eliminado">ELIMINADO</p>
-      <p class="elim-texto">Tu combinado quedó fuera del Mundialito.<br>Se acabó el juego para ti, DT. 😔</p>
+      <p class="elim-titulo" id="titulo-eliminado">${titulo}</p>
+      <p class="elim-texto">${texto}</p>
       <div class="elim-botones">
-        <button id="elim-mirar" class="btn">📺 Verlo por TV</button>
+        <button id="elim-mirar" class="btn">${boton}</button>
       </div>
     </div>`;
   const appRoot = document.getElementById('app');
@@ -1856,7 +1982,7 @@ function construirPasos(mundial) {
           <p class="campeon-label">PODIO DEL MUNDIALITO</p>
           <div class="podio-final">${podioFinalHTML(m)}</div>
           ${campeon.esIA
-            ? '<p class="campeon-dt">La máquina se quedó con el Mundialito. 😅</p>'
+            ? '<p class="campeon-dt">El Bot se quedó con el Mundialito. 😅</p>'
             : `<p class="campeon-dt">${esMioCampeon ? '¡ERES EL CAMPEÓN, DT! 👑' : `DT campeón: <b>${esc(campeon.nombre)}</b> 👑`}</p>`}
           ${app.grupo?.group ? html`
             <div class="finalizacion-grupo">

@@ -14,6 +14,7 @@ export const MAX_JUGADORES = 32;
 
 const GRUPO_SESION_PREFIX = 'mundialito-grupo-sesion:';
 const LOCAL_GRUPOS_KEY = 'mundialito-grupos-local-v1';
+const ABANDONO_TOTAL_MS = 30 * 60 * 1000;
 
 // Estas tres funciones son deliberadamente compartidas por Home y la capa de
 // red. La migracion SQL aplica las mismas reglas antes de escribir, de modo que
@@ -474,6 +475,14 @@ function salaActivaLocal(db, groupId) {
     && ['lobby', 'draft', 'running'].includes(r.status)) ?? null;
 }
 
+function salaAbandonadaLocal(room, ahora = Date.now()) {
+  if (!room || !['draft', 'running'].includes(room.status)) return false;
+  return !(room.players ?? []).some(player => {
+    const visto = Date.parse(player.last_seen || '');
+    return Number.isFinite(visto) && ahora - visto <= ABANDONO_TOTAL_MS;
+  });
+}
+
 const local = { room: null, players: [], listeners: new Set() };
 
 function guardarSalaJuegoLocal() {
@@ -589,7 +598,12 @@ async function localGrupoIniciarTorneo(argumento) {
   const token = p.sessionToken ?? p.session_token;
   const db = cargarBaseGruposLocal();
   const member = await autenticarSesionLocal(db, groupId, memberId, token);
-  if (salaActivaLocal(db, groupId)) throw new Error('El grupo ya tiene un Mundialito activo.');
+  const activa = salaActivaLocal(db, groupId);
+  if (activa) {
+    if (!salaAbandonadaLocal(activa)) throw new Error('El grupo ya tiene un Mundialito activo.');
+    activa.status = 'cancelled';
+    activa.cancelled_at = new Date().toISOString();
+  }
   if (!/^(almanaque|penales)(\|(16|32))?$/.test(String(p.modo ?? ''))) {
     throw new Error('El modo del Mundialito no es válido.');
   }
@@ -791,19 +805,13 @@ async function localMantenerPresencia() {
 
 async function localSalirSala(_code, playerId) {
   if (!local.room) return;
-  if (local.room.status === 'finished') return;
-  if (local.room.status === 'running') {
-    // Se conserva el equipo, igual que online, aunque ya no haya clientes
-    // escuchando esta sala local.
-    const p = local.players.find(pl => pl.id === playerId);
-    if (p) p.resultados = {
-      ...(p.resultados || {}),
-      _abandonados: [...new Set([...(p.resultados?._abandonados || []), playerId])],
-    };
-  } else {
+  if (['finished', 'cancelled'].includes(local.room.status)) return;
+  if (local.room.status === 'lobby') {
     local.players = local.players.filter(p => p.id !== playerId);
     if (local.room.host_id === playerId) local.room.host_id = local.players[0]?.id ?? null;
   }
+  // Draft/running mantienen la fila completa: cerrar o soltar el cliente es
+  // desconexión, no abandono ni eliminación de progreso.
   localEmitir();
 }
 

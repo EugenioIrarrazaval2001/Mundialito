@@ -72,7 +72,6 @@ function dibujar(root) {
           <span class="ticket-label">${esTorneoDeGrupo ? 'GRUPO' : 'CÓDIGO DE SALA'}</span>
           <span class="ticket-codigo ${esTorneoDeGrupo ? 'ticket-grupo' : ''}">${esc(identidadPrincipal)}</span>
         </div>
-        <span class="chip-modo">MUNDIALITO · 32 EQUIPOS</span>
       </header>
 
       <h2 class="titulo-seccion">VESTUARIO <span class="contador">— ${jugadoresConectados.length}/${MAX_JUGADORES}</span></h2>
@@ -99,23 +98,20 @@ function dibujar(root) {
           <p class="nota vestuario-resumen-planteles">${activos} / ${total}</p>
         </div>
         ${host
-          ? '<button id="btn-configurar-planteles" class="btn btn-mini">CONFIGURAR PLANTELES</button>'
+          ? '<button id="btn-configurar-planteles" class="btn btn-grande vestuario-accion-principal">CONFIGURAR PLANTELES</button>'
           : '<p class="nota">La configuración la define el DT anfitrión.</p>'}
       </section>
 
       ${host ? html`
         <div class="acciones-centro">
-          <button id="btn-repartir" class="btn btn-primario btn-grande" ${iniciandoDraft ? 'disabled' : ''}>
+          <button id="btn-repartir" class="btn btn-primario btn-grande vestuario-accion-principal" ${iniciandoDraft ? 'disabled' : ''}>
             COMENZAR MUNDIALITO
           </button>
-          <p class="nota">${esLocal
-            ? 'Armarás tu equipo de 11 titulares y 7 suplentes a punta de sorteos, y jugarás contra selecciones controladas por Bots.'
-            : 'Cada DT armará 11 titulares y 7 suplentes: en cada turno se sortea una selección histórica y elige un jugador.'}</p>
         </div>` : html`
         <p class="nota centrada esperando">Esperando que el DT anfitrión comience el Mundialito…</p>`}
 
       <div class="vestuario-historial-accion">
-        <button id="btn-ranking-historico" class="btn btn-mini">RANKING HISTÓRICO</button>
+        <button id="btn-ranking-historico" class="btn btn-grande vestuario-accion-principal">RANKING HISTÓRICO</button>
       </div>
     </div>
   `);

@@ -382,7 +382,6 @@ function htmlInicioPortada() {
 function htmlInicioOpciones() {
   return html`
     <main class="inicio inicio-opciones">
-      ${botonVolver('portada')}
       <div class="inicio-acciones">
         <button type="button" class="btn inicio-accion" data-inicio-crear>CREAR GRUPO NUEVO</button>
         <button type="button" class="btn inicio-accion" data-inicio-unir>UNIRSE A GRUPO EXISTENTE</button>
@@ -394,31 +393,25 @@ function htmlInicioOpciones() {
 const SECCIONES_MATEMATICAS = Object.freeze([
   Object.freeze({ titulo: '⚽ GOLES ESPERADOS', parrafos: [
     'Antes de cada partido, el juego calcula qué tan probable es que cada equipo marque.',
-    'La cantidad de goles sigue un modelo probabilístico de Poisson. Esto significa que el juego no decide de antemano cuántos goles habrá: asigna probabilidades a distintos resultados posibles.',
+    'La cantidad de goles sigue un modelo probabilístico de Poisson.',
     'La esperanza de goles de cada equipo depende principalmente de la diferencia entre su capacidad de ataque y la capacidad defensiva del rival.',
-    'Un equipo con grandes atacantes genera más peligro. Un rival con grandes defensores y un buen arquero reduce ese peligro.',
     'Si tu ataque supera claramente la defensa rival, tu expectativa de goles aumenta. Si la defensa rival es superior a tu ataque, disminuye.',
-    'Lo mismo se calcula en sentido contrario para estimar los goles que puedes recibir.',
-    'Este modelo no fija el marcador. Simplemente hace que algunos resultados sean más probables que otros.',
   ] }),
   Object.freeze({ titulo: '🧤 PENALES', parrafos: [
-    'Cada penal es un duelo entre el pateador y el arquero.',
     'La probabilidad de convertir depende de la calidad del pateador, la calidad del arquero, el lugar donde se ejecuta el remate y la decisión del arquero.',
     'Rematar abajo es más seguro, pero si el arquero adivina el lado tiene mejores posibilidades de detenerlo.',
     'Rematar arriba hace más difícil la atajada, pero también aumenta el riesgo de que el propio pateador falle.',
     'El arquero debe decidir izquierda, centro o derecha. Adivinar el lado ayuda mucho, pero nunca garantiza una atajada.',
     'Del mismo modo, lanzarse al lado incorrecto no garantiza que el remate termine en gol: siempre existe una pequeña posibilidad de que el pateador falle.',
     'Incluso quedarse al medio tiene riesgo. Puede funcionar ante un remate central, pero nunca es una solución segura.',
-    'La Panenka funciona de manera especial: puede castigar a un arquero que se lance, pero si el arquero permanece en el centro puede leer completamente la intención del pateador.',
-    'En resumen: nivel del pateador + nivel del arquero + elección del tiro + elección del arquero + azar determinan el resultado.',
+    'La Panenka funciona de manera especial: puede castigar a un arquero que se lance, pero si el arquero permanece en el centro nunca será gol.',
   ] }),
   Object.freeze({ titulo: '🧠 ¿QUÉ APORTA CADA LÍNEA?', parrafos: [
     'Los jugadores no influyen todos de la misma manera.',
     'Delanteros: aportan principalmente al ataque.',
     'Defensas: aportan principalmente a la defensa.',
-    'Mediocampistas: son especiales porque participan tanto en el ataque como en la defensa.',
-    'Arquero: influye en la capacidad defensiva del equipo, pero no aumenta directamente su ataque.',
-    'Por eso un mediocampo fuerte puede mejorar al equipo en ambas direcciones, mientras que un gran arquero puede hacerte mucho más difícil de vencer sin convertirte automáticamente en un equipo más goleador.',
+    'Mediocampistas: participan tanto en el ataque como en la defensa.',
+    'Arquero: influye en la capacidad defensiva del equipo.',
   ] }),
   Object.freeze({ titulo: '📋 FORMACIONES Y TÁCTICA', parrafos: [
     'La formación también modifica ligeramente el comportamiento del equipo.',
@@ -430,12 +423,10 @@ const SECCIONES_MATEMATICAS = Object.freeze([
   Object.freeze({ titulo: '🎲 EL AZAR SIGUE EXISTIENDO', parrafos: [
     'Tener el mejor equipo aumenta tus probabilidades, pero no garantiza ganar.',
     'Mundialito utiliza un modelo probabilístico: un equipo superior debería ganar más veces si el partido se repitiera muchas veces, pero en un partido individual pueden ocurrir sorpresas.',
-    'Un equipo más débil puede aprovechar sus oportunidades, un favorito puede fallarlas y un arquero puede tener un gran partido.',
     'Esa incertidumbre es intencional: queremos que construir un gran equipo importe mucho, pero que el fútbol siga siendo fútbol.',
   ] }),
   Object.freeze({ titulo: '⭐ EL NIVEL DE UN JUGADOR', parrafos: [
     'Cada jugador tiene un nivel que representa su calidad dentro de su contexto histórico.',
-    'Ese nivel alimenta la fuerza de la posición que ocupa y, finalmente, la capacidad ofensiva o defensiva del equipo.',
     'Jugar a un futbolista en una posición natural aprovecha completamente su nivel.',
     'Si debe adaptarse a una posición compatible, puede existir una penalización.',
     'Por eso no importa solamente qué jugadores elegiste, sino también dónde los utilizas.',
@@ -451,8 +442,6 @@ const SECCIONES_MATEMATICAS = Object.freeze([
   ] }),
   Object.freeze({ titulo: '🏆 ¿QUÉ DETERMINA QUIÉN GANA?', parrafos: [
     'No existe una sola variable que decida un partido.',
-    'El resultado nace de combinar: calidad de tus jugadores + posiciones + formación + ataque + defensa + rival + banca + cambios + expulsiones + decisiones durante el partido + azar.',
-    'En los penales se suma además el duelo directo entre la decisión del pateador y la del arquero.',
     'La idea de Mundialito es simple: las decisiones buenas deben darte una ventaja real, pero nunca eliminar completamente la incertidumbre del fútbol.',
   ] }),
 ]);
@@ -698,8 +687,8 @@ function htmlGateMiembro(grupo, dashboard, { onboarding = false } = {}) {
                 autocomplete="current-password" minlength="4" maxlength="6" pattern="[0-9]{4,6}"
                 placeholder="4 a 6 dígitos" required />
             </div>
-            <p class="grupo-ayuda-pin">El PIN permite recuperar tu misma identidad desde otro dispositivo.</p>
-            <button type="submit" class="btn btn-primario btn-grande">Entrar como miembro</button>
+            <p class="grupo-ayuda-pin">Es importante que lo recuerdes para almacenar tu rendimiento histórico.</p>
+            <button type="submit" class="btn btn-primario btn-grande">Entrar</button>
           </form>
         ` : ''}
 
@@ -725,7 +714,7 @@ function htmlGateMiembro(grupo, dashboard, { onboarding = false } = {}) {
                 placeholder="Mismo PIN" required />
             </div>
           </div>
-          <p class="grupo-ayuda-pin">Recuérdalo: el PIN no se muestra ni se guarda en este navegador.</p>
+          <p class="grupo-ayuda-pin">Es importante recordar tu PIN para poder iniciar sesión nuevamente en el futuro y conservar tu progreso histórico.</p>
           <button type="submit" class="btn btn-primario btn-grande">Crear mi miembro</button>
         </form>
       </section>

@@ -694,7 +694,7 @@ function dibujarTodo(root, draft) {
   const { room } = app.estado;
 
   render(root, html`
-    <div class="draft">
+    <div class="draft ${!draft.iniciado ? 'draft-configuracion-inicial' : ''}">
       <header class="cabecera-sala">
         <div class="ticket"><span class="ticket-label">${app.grupo?.group ? 'GRUPO' : 'SALA'}</span>
           <span class="ticket-codigo ${app.grupo?.group ? 'ticket-grupo' : ''}">${esc(app.grupo?.group?.displayName || app.grupo?.group?.display_name || room.group_name || room.code)}</span></div>
@@ -727,6 +727,8 @@ function dibujarTodo(root, draft) {
 
 function dibujarEstado(root, draft) {
   guardarProgresoDraft(draft);
+  const vistaDraft = $('.draft', root);
+  if (vistaDraft) vistaDraft.classList.toggle('draft-configuracion-inicial', !draft.iniciado);
   const layout = $('.draft7', root);
   if (layout) layout.classList.toggle('draft7-configuracion', !draft.iniciado);
   dibujarPanelIzq(root, draft);

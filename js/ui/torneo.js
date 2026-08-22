@@ -7,7 +7,13 @@ import { net } from '../net/net.js';
 import { render, html, esc, $, $$, toast } from './dom.js';
 import { app, salirDeSala, miJugadorId, refrescarGrupo } from '../main.js';
 import { SQUADS_BY_KEY, JUGADORES_BY_ID, bandera, squadsParaModo } from '../data/squads.js';
-import { simularMundial, parseModo } from '../engine/engine.js';
+import {
+  simularMundial,
+  parseModo,
+  ZONAS_TIRO_PENAL,
+  ZONAS_ARQUERO_PENAL,
+  resolverPenalConRng,
+} from '../engine/engine.js';
 import { Rng } from '../engine/rng.js';
 import { copaMundialitoSvg, medallaMundialitoSvg } from './icons.js';
 
@@ -1193,14 +1199,149 @@ function tablaGrupoHTML(mundial, tabla) {
 
 // ---------- tanda de penales interactiva ----------
 
-function clamp(x, a, b) { return Math.min(b, Math.max(a, x)); }
+const OPCIONES_TIRO_UI = Object.freeze([
+  { id: 'izq-arriba', icono: '↖', texto: 'ARRIBA IZQ' },
+  { id: 'centro', icono: '🎯', texto: 'AL MEDIO' },
+  { id: 'der-arriba', icono: '↗', texto: 'ARRIBA DER' },
+  { id: 'izq-abajo', icono: '↙', texto: 'ABAJO IZQ' },
+  { id: 'panenka', icono: '😏', texto: 'PANENKA' },
+  { id: 'der-abajo', icono: '↘', texto: 'ABAJO DER' },
+]);
 
-// probabilidad de gol: pesa el nivel del pateador y del arquero,
-// y si el arquero adivinó el lado (quedarse al medio y que te la tiren ahí, ataja casi todo)
-function pGol(nivelPateador, nivelArquero, mismoLado, alMedio = false) {
-  if (!mismoLado) return clamp(0.85 + (nivelPateador - 80) * 0.004, 0.72, 0.97);
-  const base = alMedio ? 0.28 : 0.45;
-  return clamp(base + (nivelPateador - nivelArquero) * 0.01, 0.10, 0.72);
+const OPCIONES_ARQUERO_UI = Object.freeze([
+  { id: 'izq', icono: '←', texto: 'IZQUIERDA' },
+  { id: 'centro', icono: '●', texto: 'MEDIO' },
+  { id: 'der', icono: '→', texto: 'DERECHA' },
+]);
+
+// Helper puro y exportado para validar el contrato de la UI: el snapshot final
+// manda, POR queda fuera y el desempate nunca depende del orden del navegador.
+export function ordenarSlotsPateadoresTanda(slots = []) {
+  return slots
+    .filter(slot => slot?.puesto !== 'POR' && slot?.linea !== 'POR'
+      && typeof slot?.id === 'string' && Number.isFinite(slot?.nivel))
+    .map(slot => ({ ...slot }))
+    .sort((a, b) => b.nivel - a.nivel || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
+export function slotArqueroTanda(slots = []) {
+  const slot = slots.find(candidato => candidato?.puesto === 'POR' || candidato?.linea === 'POR');
+  return slot && typeof slot.id === 'string' && Number.isFinite(slot.nivel) ? { ...slot } : null;
+}
+
+export function ganadorTandaInteractiva(penalesA = [], penalesB = []) {
+  const golesA = penalesA.filter(Boolean).length;
+  const golesB = penalesB.filter(Boolean).length;
+  if (penalesA.length < 5 || penalesB.length < 5) {
+    const restantesA = Math.max(0, 5 - penalesA.length);
+    const restantesB = Math.max(0, 5 - penalesB.length);
+    if (golesA > golesB + restantesB) return 'A';
+    if (golesB > golesA + restantesA) return 'B';
+    return null;
+  }
+  if (penalesA.length !== penalesB.length || golesA === golesB) return null;
+  return golesA > golesB ? 'A' : 'B';
+}
+
+function ladoTexto(lado) {
+  if (lado === 'izq') return 'izquierda';
+  if (lado === 'der') return 'derecha';
+  return 'medio';
+}
+
+function destinoArquero(lado) {
+  return lado === 'centro' ? 'al medio' : `a la ${ladoTexto(lado)}`;
+}
+
+// El helper del motor determina probabilidad, acierto y tipo de desenlace. Aquí
+// solo traducimos ese resultado a la narración solicitada, sin rehacer fórmulas.
+export function narracionPenalInteractivo(resultado, pateador, arquero) {
+  const { zonaTiro, zonaArquero, gol, desenlace, arqueroAdivino } = resultado;
+  const ladoDelTiro = zonaTiro.startsWith('izq') ? 'izquierda' : 'derecha';
+  const destino = destinoArquero(zonaArquero);
+
+  if (zonaTiro === 'panenka') {
+    if (zonaArquero === 'centro') return {
+      titulo: '🧤 ¡LE LEYÓ LA PANENKA!',
+      detalles: [`${pateador} quiso humillarlo, pero ${arquero} no se movió.`],
+      clase: 'panenka-leida',
+    };
+    if (gol) return {
+      titulo: '😏 ¡HUMILLADO!',
+      detalles: [
+        `${pateador} ha humillado a ${arquero}.`,
+        `Panenka perfecta: ${arquero} se lanzó a la ${ladoTexto(zonaArquero)}.`,
+      ],
+      clase: 'gol-panenka',
+    };
+    return {
+      titulo: '❌ ¡FALLÓ LA PANENKA!',
+      detalles: [`${arquero} estaba vencido, pero ${pateador} ejecutó mal la Panenka.`],
+      clase: 'fallo',
+    };
+  }
+
+  if (zonaTiro === 'centro') {
+    if (zonaArquero !== 'centro') return gol ? {
+      titulo: '⚽ ¡GOOOL!',
+      detalles: [`${pateador} engañó a ${arquero}: remató al medio y el arquero fue ${destino}.`],
+      clase: 'gol',
+    } : {
+      titulo: '❌ ¡LO FALLÓ!',
+      detalles: [`${arquero} estaba vencido, pero ${pateador} falló la ejecución.`],
+      clase: 'fallo',
+    };
+    return gol ? {
+      titulo: '⚽ ¡GOOOL!',
+      detalles: [`${arquero} se quedó al medio, pero no pudo detener el remate de ${pateador}.`],
+      clase: 'gol',
+    } : {
+      titulo: '🧤 ¡ATAJADO!',
+      detalles: [`${arquero} se quedó al medio y ganó el duelo contra ${pateador}.`],
+      clase: 'atajada',
+    };
+  }
+
+  const esAbajo = zonaTiro.endsWith('abajo');
+  if (!arqueroAdivino) {
+    if (gol) return esAbajo ? {
+      titulo: '⚽ ¡GOOOL!',
+      detalles: [`${pateador} engañó a ${arquero}: remató abajo a la ${ladoDelTiro} y el arquero fue ${destino}.`],
+      clase: 'gol',
+    } : {
+      titulo: '⚽ ¡GOLAZO!',
+      detalles: [`${pateador} engañó a ${arquero} y la clavó arriba a la ${ladoDelTiro}.`],
+      clase: 'gol',
+    };
+    return esAbajo ? {
+      titulo: '❌ ¡LA TIRÓ AFUERA!',
+      detalles: [`${arquero} estaba vencido, pero ${pateador} falló el remate abajo a la ${ladoDelTiro}.`],
+      clase: 'fallo',
+    } : {
+      titulo: '❌ ¡SE LE FUE!',
+      detalles: [`${arquero} estaba vencido, pero ${pateador} buscó demasiado el ángulo.`],
+      clase: 'fallo',
+    };
+  }
+
+  if (gol) return esAbajo ? {
+    titulo: '⚽ ¡GOOOL!',
+    detalles: [`${arquero} adivinó el lado, pero ${pateador} logró colocarla fuera de su alcance.`],
+    clase: 'gol',
+  } : {
+    titulo: '⚽ ¡GOLAZO!',
+    detalles: [`${arquero} adivinó el lado, pero el remate de ${pateador} fue imposible de alcanzar.`],
+    clase: 'gol',
+  };
+  return esAbajo ? {
+    titulo: '🧤 ¡ATAJADÓN!',
+    detalles: [`${arquero} adivinó la ${ladoDelTiro} y detuvo el remate abajo de ${pateador}.`],
+    clase: desenlace === 'atajada' ? 'atajada' : 'fallo',
+  } : {
+    titulo: '🧤 ¡ATAJADÓN!',
+    detalles: [`${arquero} leyó la ${ladoDelTiro} y voló para sacar el remate de ${pateador}.`],
+    clase: desenlace === 'atajada' ? 'atajada' : 'fallo',
+  };
 }
 
 // Dos modos:
@@ -1210,7 +1351,9 @@ function pGol(nivelPateador, nivelArquero, mismoLado, alMedio = false) {
 //    determinista (semilla de sala + clave + número de penal), así ambos ven lo mismo
 function abrirTanda(root, mundial, partido, room) {
   if (document.querySelector('.overlay-tanda')) return; // ya está abierta
-  const almanaque = parseModo(room.modo).modo === 'almanaque';
+  const modo = parseModo(room.modo).modo;
+  const almanaque = modo === 'almanaque';
+  const soloPenales = modo === 'penales';
   const miEq = 'h-' + miJugadorId();
   const soyA = partido.idA === miEq;
   const eqA = mundial.equipos.find(e => e.id === partido.idA);
@@ -1221,31 +1364,27 @@ function abrirTanda(root, mundial, partido, room) {
   const rivalPid = duelo ? rival.id.slice(2) : null;
   const kT = '_t_' + partido.clave; // mis lados elegidos, guardados en mi fila
 
-  const nivelLineup = (eq, id) => eq.lineup.slots?.find(s => s.id === id)?.nivel ?? JUGADORES_BY_ID[id]?.nivel ?? 70;
+  const nivelLineup = (eq, id) => eq.lineup?.slots?.find(s => s.id === id)?.nivel
+    ?? JUGADORES_BY_ID[id]?.nivel ?? 70;
   const conNivelLineup = eq => id => ({ ...JUGADORES_BY_ID[id], nivel: nivelLineup(eq, id) });
-  const ordenarPateadores = jugadores => jugadores
-    .sort((a, b) => b.nivel - a.nivel || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  const pateadoresDesdeSlots = slots => ordenarPateadores(slots
-    .filter(slot => slot?.puesto !== 'POR' && slot?.linea !== 'POR')
-    .flatMap(slot => {
-      const jugador = JUGADORES_BY_ID[slot.id];
-      return jugador && Number.isFinite(slot.nivel)
-        ? [{ ...jugador, nivel: slot.nivel }]
-        : [];
-    }));
+  const pateadoresDesdeSlots = slots => ordenarSlotsPateadoresTanda(slots).flatMap(slot => {
+    const jugador = JUGADORES_BY_ID[slot.id];
+    return jugador ? [{ ...jugador, nivel: slot.nivel }] : [];
+  });
   const pateadoresOriginales = eq => {
     if (Array.isArray(eq.lineup?.slots)) return pateadoresDesdeSlots(eq.lineup.slots);
-    return ordenarPateadores([
+    return [
       ...(eq.lineup?.DEF || []),
       ...(eq.lineup?.MED || []),
       ...(eq.lineup?.DEL || []),
-    ].map(conNivelLineup(eq)).filter(jugador => jugador.id));
+    ].map(conNivelLineup(eq)).filter(jugador => jugador.id)
+      .sort((a, b) => b.nivel - a.nivel || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   };
   const pateadoresPartido = (eq, slotsFinales) => {
     // Un snapshot presente es la fuente de verdad aunque excepcionalmente quede
     // vacío: volver al XI original podría reintroducir a un expulsado. El
     // fallback queda reservado a Solo Penales y resultados legacy sin snapshot.
-    return Array.isArray(slotsFinales)
+    return !soloPenales && Array.isArray(slotsFinales)
       ? pateadoresDesdeSlots(slotsFinales)
       : pateadoresOriginales(eq);
   };
@@ -1255,8 +1394,22 @@ function abrirTanda(root, mundial, partido, room) {
     toast('No hay pateadores de campo elegibles para iniciar la tanda.', true);
     return;
   }
-  const gkA = conNivelLineup(eqA)(eqA.lineup.POR[0]);
-  const gkB = conNivelLineup(eqB)(eqB.lineup.POR[0]);
+  const arqueroDesdeSlots = (eq, slotsFinales) => {
+    const slots = !soloPenales && Array.isArray(slotsFinales) ? slotsFinales : eq.lineup?.slots;
+    if (Array.isArray(slots)) {
+      const slot = slotArqueroTanda(slots);
+      const jugador = slot && JUGADORES_BY_ID[slot.id];
+      return jugador && Number.isFinite(slot.nivel) ? { ...jugador, nivel: slot.nivel } : null;
+    }
+    const id = eq.lineup?.POR?.[0];
+    return id ? conNivelLineup(eq)(id) : null;
+  };
+  const gkA = arqueroDesdeSlots(eqA, partido.slotsFinalesA);
+  const gkB = arqueroDesdeSlots(eqB, partido.slotsFinalesB);
+  if (!gkA || !gkB) {
+    toast('No hay un arquero elegible para iniciar la tanda.', true);
+    return;
+  }
 
   // marcador por equipo real; el equipo A patea primero
   const t = { A: [], B: [] }; // true = gol
@@ -1283,6 +1436,7 @@ function abrirTanda(root, mundial, partido, room) {
 
   let accion = null;     // callback al elegir lado
   let animando = false;  // no procesar doble durante una animación
+  let publicandoEleccion = false;
   let cerrado = false;
   let guardando = false;
 
@@ -1299,7 +1453,7 @@ function abrirTanda(root, mundial, partido, room) {
       pantallaTorneo(root);
       return;
     }
-    if (!animando) procesar();
+    if (!animando && !publicandoEleccion) procesar();
   };
   if (duelo) document.addEventListener('sala:cambio', tandaHandler);
   const cerrar = () => {
@@ -1316,15 +1470,28 @@ function abrirTanda(root, mundial, partido, room) {
     net.actualizarJugador(room.code, miJugadorId(), { resultados: yo.resultados }).catch(() => {});
   };
 
-  const marcas = arr => {
-    const total = Math.max(5, arr.length);
-    return Array.from({ length: total }, (_, i) =>
-      i < arr.length ? (arr[i] ? '⚽' : '❌') : '·').join(' ');
+  const marcas = (arr, total) => {
+    const texto = Array.from({ length: total }, (_, i) =>
+      i < arr.length ? (arr[i] ? 'gol' : 'fallo') : 'pendiente').join(', ');
+    return `<span class="marcas" role="img" aria-label="${esc(texto)}">${Array.from({ length: total }, (_, i) => {
+      const marca = i < arr.length ? (arr[i] ? '⚽' : '❌') : '·';
+      return `<span class="marca-penal ${i < arr.length ? (arr[i] ? 'marca-gol' : 'marca-fallo') : 'marca-pendiente'}" aria-hidden="true">${marca}</span>`;
+    }).join('')}</span>`;
   };
+
+  const controlesEleccion = tipo => {
+    const opciones = tipo === 'tiro' ? OPCIONES_TIRO_UI : OPCIONES_ARQUERO_UI;
+    return `<div class="penal-opciones penal-opciones-${tipo}" role="group" aria-label="${tipo === 'tiro' ? 'Elegir zona del remate' : 'Elegir dirección del arquero'}">${opciones.map(opcion =>
+      `<button type="button" class="penal-opcion penal-opcion-${tipo} penal-opcion-${opcion.id}" data-zona-penal="${opcion.id}" aria-label="${opcion.texto}"><span class="penal-opcion-icono" aria-hidden="true">${opcion.icono}</span><span>${opcion.texto}</span></button>`).join('')}</div>`;
+  };
+
+  const narracionHTML = narracion => `<span class="tanda-msg-titulo">${esc(narracion.titulo)}</span>${narracion.detalles
+    .map(detalle => `<span class="tanda-msg-detalle">${esc(detalle)}</span>`).join('')}`;
 
   function dibujarTanda(msg, opts = {}) {
     const mias = soyA ? t.A : t.B;
     const suyas = soyA ? t.B : t.A;
+    const totalMarcas = Math.max(5, t.A.length, t.B.length);
     div.innerHTML = html`
       <div class="tanda">
         <p class="tanda-titulo">🧤 TANDA DE PENALES</p>
@@ -1333,72 +1500,84 @@ function abrirTanda(root, mundial, partido, room) {
           <span class="turno-quien">${opts.turno.label}</span>
         </div>` : ''}
         <div class="tanda-marcas">
-          <div class="tanda-fila"><span class="tanda-eq">⭐ ${esc(mio.nombre)}</span>
-            <b>${goles(mias)}</b> <span class="marcas">${marcas(mias)}</span></div>
+          <div class="tanda-fila"><span class="tanda-eq">${etiquetaEquipo(mio)}</span>
+            <b class="tanda-score">${goles(mias)}</b>${marcas(mias, totalMarcas)}</div>
           <div class="tanda-fila"><span class="tanda-eq">${etiquetaRival}</span>
-            <b>${goles(suyas)}</b> <span class="marcas">${marcas(suyas)}</span></div>
+            <b class="tanda-score">${goles(suyas)}</b>${marcas(suyas, totalMarcas)}</div>
         </div>
-        <div class="arco-zona">
-          <div class="arco">
+        <p class="tanda-msg ${opts.narracion?.clase || ''}" aria-live="polite">${msg}</p>
+        <div class="arco-zona ${opts.eleccion ? `eligiendo-${opts.eleccion}` : 'mostrando-resultado'}">
+          <div class="arco ${opts.eleccion ? 'arco-interactivo' : ''}">
             <span class="golero ${opts.golero || ''}">🧤</span>
+            ${opts.eleccion ? controlesEleccion(opts.eleccion) : ''}
           </div>
           <span class="balon ${opts.balon || ''}">⚽</span>
-          ${opts.verdict ? `<div class="verdict">${opts.verdict}</div>` : ''}
+          ${opts.verdict ? `<div class="verdict ${opts.verdictClase || ''}">${opts.verdict}</div>` : ''}
         </div>
-        <p class="tanda-msg">${msg}</p>
         <div class="tanda-botones">
-          ${opts.botones ? html`
-            <button class="btn btn-primario btn-lado" data-lado="izq">⬅ IZQUIERDA</button>
-            <button class="btn btn-primario btn-lado" data-lado="centro">🎯 AL MEDIO</button>
-            <button class="btn btn-primario btn-lado" data-lado="der">DERECHA ➡</button>` : ''}
           ${opts.continuar ? '<button id="tanda-continuar" class="btn btn-primario btn-grande">Continuar ▶</button>' : ''}
         </div>
       </div>`;
 
-    $$('.btn-lado', div).forEach(b => b.addEventListener('click', () => {
+    $$('[data-zona-penal]', div).forEach(b => b.addEventListener('click', () => {
       const cb = accion;
       accion = null;
-      $$('.btn-lado', div).forEach(btn => { btn.disabled = true; });
-      if (cb) cb(b.dataset.lado);
+      $$('[data-zona-penal]', div).forEach(btn => { btn.disabled = true; });
+      if (cb) cb(b.dataset.zonaPenal);
     }));
     $('#tanda-continuar', div)?.addEventListener('click', guardar);
   }
 
-  function resolver(pateaA, ladoTiro, ladoAtajada, gol) {
+  function resolver(pateaA, zonaTiro, zonaArquero, resultado) {
     const lista = pateaA ? t.A : t.B;
     const pateador = (pateaA ? patA : patB)[lista.length % (pateaA ? patA : patB).length];
     const arquero = pateaA ? gkB : gkA;
-    lista.push(gol);
+    lista.push(resultado.gol);
     publicarLive();
     const pateoYo = pateaA === soyA;
-    const arqueroToco = ladoTiro === ladoAtajada && !gol;
+    const narracion = narracionPenalInteractivo(
+      { ...resultado, zonaTiro, zonaArquero }, pateador.nombre, arquero.nombre,
+    );
+    const esPanenkaLeida = zonaTiro === 'panenka' && zonaArquero === 'centro';
     animando = true;
-    dibujarTanda(
-      gol
-        ? (pateoYo ? `⚽ ¡GOOOOL de ${esc(pateador.nombre)}!` : `❌ Gol de ${esc(pateador.nombre)}…`)
-        : (pateoYo ? `🧤 ¡${esc(arquero.nombre)} se la atajó!` : `🧤 ¡ATAJADÓN de ${esc(arquero.nombre)}!`),
-      {
-        balon: ladoTiro + (gol ? ' gol' : ' atajado'),
-        golero: ladoAtajada + (arqueroToco || !gol ? '' : ' errado'),
-        verdict: gol ? (pateoYo ? '¡GOL!' : 'GOL RIVAL') : (pateoYo ? '¡ATAJADO!' : '¡LA SACASTE!'),
-        turno: { mio: pateoYo, label: etiquetaEquipo(pateaA ? eqA : eqB) },
-      });
+    dibujarTanda(narracionHTML(narracion), {
+      narracion,
+      balon: `${zonaTiro} ${resultado.desenlace}${esPanenkaLeida ? ' panenka-leida' : ''}`,
+      golero: `${zonaArquero} ${resultado.arqueroAdivino ? 'adivino' : 'errado'}`,
+      verdict: esPanenkaLeida ? '¡TE LEYERON!' : resultado.gol ? '¡GOL!' : resultado.desenlace === 'atajada' ? '¡ATAJADA!' : '¡FALLÓ!',
+      verdictClase: narracion.clase,
+      turno: { mio: pateoYo, label: etiquetaEquipo(pateaA ? eqA : eqB) },
+    });
     setTimeout(() => { animando = false; if (!cerrado) procesar(); }, 1500);
   }
 
+  const eleccionNormalizada = (valor, esTiro) => {
+    const zonas = esTiro ? ZONAS_TIRO_PENAL : ZONAS_ARQUERO_PENAL;
+    if (zonas.includes(valor)) return valor;
+    // Compatibilidad defensiva con una tanda que hubiera empezado justo antes de
+    // actualizar: el viejo tiro lateral se interpreta como remate abajo.
+    if (esTiro && valor === 'izq') return 'izq-abajo';
+    if (esTiro && valor === 'der') return 'der-abajo';
+    return 'centro';
+  };
+
+  const resolverDeterminista = (pateaA, k, zonaTiro, zonaArquero) => {
+    const pateador = (pateaA ? patA : patB)[(pateaA ? t.A : t.B).length % (pateaA ? patA : patB).length];
+    const arquero = pateaA ? gkB : gkA;
+    const rng = new Rng(`tanda-resultado-${room.seed}-${partido.clave}-${k}`);
+    const resultado = resolverPenalConRng(
+      rng, pateador.nivel, arquero.nivel, zonaTiro, zonaArquero,
+    );
+    resolver(pateaA, zonaTiro, zonaArquero, resultado);
+  };
+
   function procesar() {
-    if (cerrado || animando) return;
+    if (cerrado || animando || publicandoEleccion) return;
     const completas = t.A.length === t.B.length;
-    const ga = goles(t.A), gb = goles(t.B);
     // al mejor de 5: durante los primeros 5, termina apenas la ventaja sea
     // inalcanzable. en muerte súbita (ambos con 5+), solo cuando patearon
     // parejo y hay diferencia — nunca antes de que el segundo responda su penal.
-    if (t.A.length < 5 || t.B.length < 5) {
-      const remA = Math.max(0, 5 - t.A.length), remB = Math.max(0, 5 - t.B.length);
-      if (ga > gb + remB || gb > ga + remA) return terminar();
-    } else if (completas && ga !== gb) {
-      return terminar();
-    }
+    if (ganadorTandaInteractiva(t.A, t.B)) return terminar();
 
     const pateaA = completas; // A patea cuando van parejos en penales ejecutados
     const k = t.A.length + t.B.length; // número de penal (global)
@@ -1407,22 +1586,24 @@ function abrirTanda(root, mundial, partido, room) {
     const arquero = pateaA ? gkB : gkA;
     const pateoYo = pateaA === soyA;
 
-    const pedirLado = () => dibujarTanda(pateoYo
-      ? `Patea ${esc(pateador.nombre)}${nv(pateador)} contra ${esc(arquero.nombre)}${nv(arquero)}. ¿A qué lado le pega?`
-      : `Patea ${esc(pateador.nombre)}${nv(pateador)}. ¡${esc(arquero.nombre)} puede ser héroe! ¿Hacia dónde se lanza?`,
-      { botones: true, turno: { mio: pateoYo, label: etiquetaEquipo(pateaA ? eqA : eqB) } });
+    const pedirEleccion = () => dibujarTanda(pateoYo
+      ? `Patea ${esc(pateador.nombre)}${nv(pateador)} contra ${esc(arquero.nombre)}${nv(arquero)}. ¿Dónde le pega?`
+      : `Patea ${esc(pateador.nombre)}${nv(pateador)}. ${esc(arquero.nombre)}${nv(arquero)} está bajo los tres palos. ¿Hacia dónde se lanza?`,
+      { eleccion: pateoYo ? 'tiro' : 'arquero', turno: { mio: pateoYo, label: etiquetaEquipo(pateaA ? eqA : eqB) } });
 
     if (!duelo) {
-      // contra la máquina: su lado sale al azar al momento de resolver
-      accion = lado => {
-        const rng = new Rng(`tanda-ia-${room.seed}-${partido.clave}-${k}-${lado}`);
-        const ladoIA = ['izq', 'centro', 'der'][rng.int(3)];
-        const ladoTiro = pateoYo ? lado : ladoIA;
-        const ladoAtajada = pateoYo ? ladoIA : lado;
-        resolver(pateaA, ladoTiro, ladoAtajada,
-          rng.next() < pGol(pateador.nivel, arquero.nivel, ladoTiro === ladoAtajada, ladoTiro === 'centro'));
+      // La elección de la IA usa un stream separado que no incluye ni observa la
+      // elección humana. Un rerender produce exactamente la misma decisión.
+      accion = eleccionHumana => {
+        const rolIA = pateoYo ? 'arquero' : 'pateador';
+        const zonasIA = pateoYo ? ZONAS_ARQUERO_PENAL : ZONAS_TIRO_PENAL;
+        const rngIA = new Rng(`tanda-ia-eleccion-${room.seed}-${partido.clave}-${k}-${rolIA}`);
+        const eleccionIA = zonasIA[rngIA.int(zonasIA.length)];
+        const zonaTiro = pateoYo ? eleccionHumana : eleccionIA;
+        const zonaArquero = pateoYo ? eleccionIA : eleccionHumana;
+        resolverDeterminista(pateaA, k, zonaTiro, zonaArquero);
       };
-      pedirLado();
+      pedirEleccion();
       return;
     }
 
@@ -1430,26 +1611,36 @@ function abrirTanda(root, mundial, partido, room) {
     const sus = susLados();
     if (misLados.length > k && sus.length > k) {
       // ambos eligieron: desenlace determinista, idéntico en las dos pantallas
-      const ladoTiro = pateoYo ? misLados[k] : sus[k];
-      const ladoAtajada = pateoYo ? sus[k] : misLados[k];
-      const rng = new Rng(`tanda-${room.seed}-${partido.clave}-${k}`);
-      resolver(pateaA, ladoTiro, ladoAtajada,
-        rng.next() < pGol(pateador.nivel, arquero.nivel, ladoTiro === ladoAtajada, ladoTiro === 'centro'));
+      const zonaTiro = eleccionNormalizada(pateoYo ? misLados[k] : sus[k], true);
+      const zonaArquero = eleccionNormalizada(pateoYo ? sus[k] : misLados[k], false);
+      resolverDeterminista(pateaA, k, zonaTiro, zonaArquero);
       return;
     }
     if (misLados.length > k) {
       dibujarTanda(`⏳ Esperando la elección de ${esc(rival.nombre)}…`, {});
       return;
     }
-    accion = async lado => {
-      misLados.push(lado);
+    accion = async zona => {
+      const ladosPrevios = misLados.slice();
       const yo = app.estado.players.find(pl => pl.id === miJugadorId());
-      yo.resultados = { ...(yo.resultados || {}), [kT]: misLados };
-      try { await net.actualizarJugador(room.code, miJugadorId(), { resultados: yo.resultados }); }
-      catch (e) { toast('No se pudo enviar tu elección: ' + e.message, true); }
+      const resultadosPrevios = yo.resultados || {};
+      misLados = [...misLados, zona];
+      yo.resultados = { ...resultadosPrevios, [kT]: misLados };
+      publicandoEleccion = true;
+      try {
+        await net.actualizarJugador(room.code, miJugadorId(), { resultados: yo.resultados });
+      } catch (e) {
+        // Si la publicación falla, la elección no existe para el rival: se
+        // revierte también localmente y se vuelve a habilitar el mismo turno.
+        misLados = ladosPrevios;
+        yo.resultados = resultadosPrevios;
+        toast('No se pudo enviar tu elección: ' + e.message, true);
+      } finally {
+        publicandoEleccion = false;
+      }
       procesar();
     };
-    pedirLado();
+    pedirEleccion();
   }
 
   function terminar() {

@@ -252,6 +252,102 @@ const VENTANAS_ALARGUE = Object.freeze([[93, 104], [106, 116]]);
 const FACTOR_ATAQUE_POR_EXPULSION = 0.90;
 const FACTOR_DEFENSA_POR_EXPULSION = 0.90;
 
+// Zonas compartidas por el motor y la tanda interactiva. Los identificadores
+// forman parte del contrato persistido entre clientes durante un duelo humano.
+export const ZONAS_TIRO_PENAL = Object.freeze([
+  'izq-arriba',
+  'izq-abajo',
+  'centro',
+  'panenka',
+  'der-abajo',
+  'der-arriba',
+]);
+
+export const ZONAS_ARQUERO_PENAL = Object.freeze(['izq', 'centro', 'der']);
+
+function clamp(valor, minimo, maximo) {
+  return Math.min(maximo, Math.max(minimo, valor));
+}
+
+function validarIntentoPenal(ratingPateador, ratingArquero, zonaTiro, zonaArquero) {
+  if (!Number.isFinite(ratingPateador) || !Number.isFinite(ratingArquero)) {
+    throw new TypeError('Los ratings del penal deben ser números finitos.');
+  }
+  if (!ZONAS_TIRO_PENAL.includes(zonaTiro)) {
+    throw new RangeError(`Zona de tiro inválida: ${zonaTiro}`);
+  }
+  if (!ZONAS_ARQUERO_PENAL.includes(zonaArquero)) {
+    throw new RangeError(`Zona de arquero inválida: ${zonaArquero}`);
+  }
+}
+
+// Fuente de verdad de la matriz 6 x 3. Solo interviene el rating del arquero
+// cuando este adivina la zona lateral o permanece al medio ante un tiro central.
+export function evaluarPenal(ratingPateador, ratingArquero, zonaTiro, zonaArquero) {
+  validarIntentoPenal(ratingPateador, ratingArquero, zonaTiro, zonaArquero);
+
+  const ladoTiro = zonaTiro.startsWith('izq-')
+    ? 'izq'
+    : zonaTiro.startsWith('der-') ? 'der' : 'centro';
+  const tipoTiro = zonaTiro.endsWith('-arriba')
+    ? 'arriba'
+    : zonaTiro.endsWith('-abajo') ? 'abajo' : zonaTiro;
+  const arqueroAdivino = ladoTiro === zonaArquero;
+  let probabilidad;
+
+  if (tipoTiro === 'panenka') {
+    probabilidad = arqueroAdivino
+      ? 0
+      : clamp((ratingPateador - 50) / 50, 0.10, 0.95);
+  } else if (tipoTiro === 'centro') {
+    probabilidad = arqueroAdivino
+      ? clamp(0.35 + 0.015 * (ratingPateador - ratingArquero), 0.10, 0.70)
+      : Math.min(ratingPateador / 100, 0.97);
+  } else if (tipoTiro === 'abajo') {
+    probabilidad = arqueroAdivino
+      ? clamp(0.30 + 0.015 * (ratingPateador - ratingArquero), 0.08, 0.60)
+      : clamp(0.93 + 0.003 * (ratingPateador - 80), 0.85, 0.97);
+  } else {
+    probabilidad = arqueroAdivino
+      ? clamp(0.52 + 0.015 * (ratingPateador - ratingArquero), 0.18, 0.82)
+      : clamp(0.80 + 0.006 * (ratingPateador - 80), 0.65, 0.95);
+  }
+
+  return {
+    probabilidad,
+    arqueroAdivino,
+    tipoTiro,
+    ladoTiro,
+    ladoArquero: zonaArquero,
+  };
+}
+
+export function resolverPenalConRng(
+  rng,
+  ratingPateador,
+  ratingArquero,
+  zonaTiro,
+  zonaArquero,
+) {
+  if (!rng || typeof rng.next !== 'function') {
+    throw new TypeError('resolverPenalConRng requiere una instancia de Rng.');
+  }
+  const evaluacion = evaluarPenal(
+    ratingPateador,
+    ratingArquero,
+    zonaTiro,
+    zonaArquero,
+  );
+  const azar = rng.next();
+  const gol = azar < evaluacion.probabilidad;
+  return {
+    ...evaluacion,
+    azar,
+    gol,
+    desenlace: gol ? 'gol' : evaluacion.arqueroAdivino ? 'atajada' : 'fallo',
+  };
+}
+
 // Tasas aproximadas de los Mundiales 2014, 2018 y 2022. Las tarjetas viven
 // solamente durante este partido y usan un RNG propio; no generan suspensiones.
 export const DISCIPLINA = Object.freeze({
@@ -761,19 +857,34 @@ function simularPeriodo(
   return { golesA: golesA + tramoFinal.golesA, golesB: golesB + tramoFinal.golesB };
 }
 
-function resolverPenales(rng, fA, fB, override) {
-  // La tanda automática mantiene el mismo algoritmo y consumo del RNG. El
-  // override interactivo se aplica después, como en la versión anterior.
-  let pa = 0, pb = 0, ronda = 0;
-  const pConvierte = (gkRival) => 0.78 - (gkRival - 80) * 0.004;
-  while (true) {
-    ronda++;
-    const ca = rng.next() < pConvierte(fB.gk) ? 1 : 0;
-    const cb = rng.next() < pConvierte(fA.gk) ? 1 : 0;
-    pa += ca; pb += cb;
-    const restantes = Math.max(0, 5 - ronda);
-    if (pa > pb + restantes || pb > pa + restantes) break;
-    if (ronda >= 12) { if (rng.next() < 0.5) pa++; else pb++; break; }
+function resolverPenales(rng, fA, fB, override, ambosIA = false) {
+  let pa = 0, pb = 0;
+
+  if (ambosIA) {
+    // En un cruce puramente automático la clasificación es un volado exacto:
+    // el primer valor elige al ganador y el segundo solo un marcador plausible.
+    // Ningún rating participa en esta rama.
+    const ganaA = rng.next() < 0.5;
+    const marcadoresGanador = [[3, 2], [4, 2], [4, 3], [5, 4], [6, 5], [7, 6]];
+    const [golesGanador, golesPerdedor] = rng.pick(marcadoresGanador);
+    [pa, pb] = ganaA
+      ? [golesGanador, golesPerdedor]
+      : [golesPerdedor, golesGanador];
+  } else {
+    // Los cruces con un humano conservan el fallback automático previo. Sirve
+    // como resultado provisional (o definitivo si el DT queda ausente) y el
+    // override interactivo continúa reemplazándolo al final.
+    let ronda = 0;
+    const pConvierte = (gkRival) => 0.78 - (gkRival - 80) * 0.004;
+    while (true) {
+      ronda++;
+      const ca = rng.next() < pConvierte(fB.gk) ? 1 : 0;
+      const cb = rng.next() < pConvierte(fA.gk) ? 1 : 0;
+      pa += ca; pb += cb;
+      const restantes = Math.max(0, 5 - ronda);
+      if (pa > pb + restantes || pb > pa + restantes) break;
+      if (ronda >= 12) { if (rng.next() < 0.5) pa++; else pb++; break; }
+    }
   }
   if (override?.penales) {
     return { golesA: override.penales.golesA, golesB: override.penales.golesB, auto: false };
@@ -862,6 +973,7 @@ function simularPartidoInterno(rng, eqA, eqB, conDesempate, override, etapa, dis
       fuerzaEquipo(equipoActivo(estadoA)),
       fuerzaEquipo(equipoActivo(estadoB)),
       override,
+      eqA.esIA === true && eqB.esIA === true,
     );
   }
 
@@ -904,7 +1016,13 @@ export function simularPartido(
   // disciplina, Poisson de partido ni alargue, y entra directamente a la tanda.
   if (soloPenales) {
     const fA = fuerzaEquipo(eqA), fB = fuerzaEquipo(eqB);
-    const penales = resolverPenales(rng, fA, fB, override);
+    const penales = resolverPenales(
+      rng,
+      fA,
+      fB,
+      override,
+      eqA.esIA === true && eqB.esIA === true,
+    );
     const ganador = penales.golesA > penales.golesB ? eqA.id : eqB.id;
     return {
       idA: eqA.id, idB: eqB.id,

@@ -19,6 +19,8 @@ export const app = {
 };
 
 const CONTEXTO_GRUPO_KEY = 'mundialito-grupo-contexto';
+const RESUME_KEY = 'mundialito-resume';
+const VENTANA_REANUDACION_MS = 10 * 60 * 1000;
 
 function idGrupo(group) { return group?.id || group?.group_id || null; }
 function extraerIngresoVestuario(respuesta) {
@@ -40,6 +42,49 @@ function guardarContextoGrupo() {
   }));
 }
 
+function limpiarResume() {
+  localStorage.removeItem(RESUME_KEY);
+  sessionStorage.removeItem('mundialito-sala');
+  sessionStorage.removeItem('mundialito-player-id');
+}
+
+function leerResume() {
+  try {
+    const resume = JSON.parse(localStorage.getItem(RESUME_KEY));
+    if (!resume || typeof resume !== 'object' ||
+        !resume.groupId || !resume.memberId || !resume.roomCode || !resume.playerId ||
+        !Number.isFinite(resume.lastActiveAt)) return null;
+    return resume;
+  } catch {
+    return null;
+  }
+}
+
+function resumeVigente(resume = leerResume()) {
+  return Boolean(resume && Date.now() - resume.lastActiveAt >= 0 &&
+    Date.now() - resume.lastActiveAt <= VENTANA_REANUDACION_MS);
+}
+
+function guardarResume() {
+  const groupId = idGrupo(app.grupo?.group);
+  const memberId = app.grupo?.member?.id;
+  if (!app.code || !app.playerId || !groupId || !memberId) return;
+  // No incluye PIN, token ni hashes: la sesión persistente existente se valida
+  // nuevamente en el backend antes de reanudar.
+  localStorage.setItem(RESUME_KEY, JSON.stringify({
+    groupId: String(groupId),
+    memberId: String(memberId),
+    roomCode: String(app.code),
+    playerId: String(app.playerId),
+    lastActiveAt: Date.now(),
+  }));
+}
+
+function errorDeRedTransitorio(error) {
+  const texto = String(error?.message || error || '').toLowerCase();
+  return navigator.onLine === false || /network|fetch|offline|timeout|connection|conexi[oó]n/.test(texto);
+}
+
 export function miJugadorId() {
   return app.playerId || miId();
 }
@@ -56,19 +101,28 @@ function detenerHeartbeat() {
   heartbeatEnCurso = false;
 }
 
+async function pulsoHeartbeat() {
+  const code = heartbeatCode;
+  if (!code || heartbeatEnCurso || app.code !== code) return;
+  heartbeatEnCurso = true;
+  try {
+    await net.mantenerPresencia(code, miJugadorId());
+    // Mientras está en background se conserva la hora en que se dejó la app;
+    // así la ventana de 10 minutos mide tiempo real fuera de Mundialito.
+    if (document.visibilityState !== 'hidden') guardarResume();
+  } catch {
+    // El polling y el siguiente pulso reintentan sin destruir el contexto local.
+  } finally {
+    heartbeatEnCurso = false;
+  }
+}
+
 function iniciarHeartbeat(code) {
   detenerHeartbeat();
   if (!ONLINE) return;
   heartbeatCode = code;
-  const pulso = async () => {
-    if (heartbeatEnCurso || app.code !== code || heartbeatCode !== code) return;
-    heartbeatEnCurso = true;
-    try { await net.mantenerPresencia(code, miJugadorId()); }
-    catch { /* el polling y el siguiente pulso vuelven a intentarlo */ }
-    finally { heartbeatEnCurso = false; }
-  };
-  pulso();
-  heartbeatTimer = setInterval(pulso, HEARTBEAT_MS);
+  pulsoHeartbeat();
+  heartbeatTimer = setInterval(pulsoHeartbeat, HEARTBEAT_MS);
 }
 
 function cambiarPantalla(nombre, renderFn) {
@@ -155,6 +209,7 @@ export async function salirDeGrupo() {
     toast('El Mundialito sigue en curso. Cerrar esta pestaña conserva tu participación para reconectar después.', true);
     return;
   }
+  limpiarResume();
   const groupId = idGrupo(app.grupo?.group);
   if (app.code) salirDeSala({ volverAlGrupo: false });
   if (groupId) await net.grupoSesionBorrar(groupId);
@@ -173,6 +228,7 @@ export function entrarASala(code, { playerId = null } = {}) {
   // recordar la sala para reconectarse si se recarga la página
   sessionStorage.setItem('mundialito-sala', code);
   sessionStorage.setItem('mundialito-player-id', app.playerId);
+  guardarResume();
 }
 
 export function salirDeSala({ notificar = true, volverAlGrupo = true } = {}) {
@@ -192,8 +248,7 @@ export function salirDeSala({ notificar = true, volverAlGrupo = true } = {}) {
   app.playerId = null;
   app.estado = null;
   app.pantallaActual = null;
-  sessionStorage.removeItem('mundialito-sala');
-  sessionStorage.removeItem('mundialito-player-id');
+  limpiarResume();
   if (volverAlGrupo) {
     if (status === 'finished' && app.grupo?.member && app.grupo?.token) {
       refrescarGrupo({ renderizar: false, silencioso: true })
@@ -230,6 +285,7 @@ function alCambiarEstado(estado) {
     return;
   }
   if (status === 'finished') detenerHeartbeat();
+  if (['lobby', 'draft', 'running'].includes(status) && document.visibilityState !== 'hidden') guardarResume();
   const pantalla = status === 'lobby' ? 'lobby' : status === 'draft' ? 'draft' : 'torneo';
 
   // Torneo captura `esHost` al montar la pantalla. Un relevo requiere montar de
@@ -245,6 +301,115 @@ function alCambiarEstado(estado) {
   }
 }
 
+function grupoReanudado(dashboard, sesion) {
+  return {
+    group: dashboard.group,
+    member: sesion.member,
+    token: sesion.token,
+    expiresAt: sesion.expiresAt || null,
+    dashboard,
+    vestuarioError: null,
+  };
+}
+
+let reanudacionEnCurso = false;
+
+async function intentarReanudarAutomaticamente() {
+  if (reanudacionEnCurso || app.code) return false;
+  const resume = leerResume();
+  if (!resume) return false;
+  if (!resumeVigente(resume)) {
+    limpiarResume();
+    return false;
+  }
+
+  const sesion = net.grupoSesionLeer(resume.groupId);
+  if (!sesion || String(sesion.member?.id) !== String(resume.memberId)) {
+    limpiarResume();
+    return false;
+  }
+
+  reanudacionEnCurso = true;
+  try {
+    const [dashboard, estado] = await Promise.all([
+      net.grupoDashboard(resume.groupId),
+      net.estado(resume.roomCode),
+    ]);
+    const room = estado?.room;
+    const grupo = dashboard?.group;
+    if (!grupo || String(idGrupo(grupo)) !== String(resume.groupId) ||
+        !room || String(room.group_id) !== String(resume.groupId)) {
+      limpiarResume();
+      return false;
+    }
+
+    const restaurado = grupoReanudado(dashboard, sesion);
+    // Una sala terminada o cancelada nunca se revive: se vuelve al grupo para
+    // continuar por su flujo normal, no al snapshot de un torneo ya cerrado.
+    if (['finished', 'cancelled'].includes(room.status)) {
+      app.grupo = restaurado;
+      guardarContextoGrupo();
+      limpiarResume();
+      pantallaGrupo(app.root);
+      return true;
+    }
+    if (!['lobby', 'draft', 'running'].includes(room.status)) {
+      limpiarResume();
+      return false;
+    }
+
+    const player = (estado.players || []).find(p =>
+      String(p.id) === String(resume.playerId) && String(p.member_id) === String(resume.memberId));
+    if (!player) {
+      limpiarResume();
+      return false;
+    }
+
+    // La RPC vigente comprueba el token contra backend y retorna el jugador
+    // existente; el prechequeo anterior impide crear una participación nueva.
+    const ingreso = await net.grupoUnirseTorneo({
+      groupId: resume.groupId,
+      memberId: sesion.member.id,
+      sessionToken: sesion.token,
+    });
+    const { code, playerId } = extraerIngresoVestuario(ingreso);
+    if (String(code) !== String(resume.roomCode) || String(playerId) !== String(resume.playerId)) {
+      limpiarResume();
+      return false;
+    }
+
+    app.grupo = restaurado;
+    guardarContextoGrupo();
+    entrarASala(code, { playerId });
+    return true;
+  } catch (error) {
+    // Una red transitoriamente caída no invalida una sesión ni borra el resume.
+    if (!errorDeRedTransitorio(error)) limpiarResume();
+    return false;
+  } finally {
+    reanudacionEnCurso = false;
+  }
+}
+
+async function reconciliarAlVolverVisible() {
+  if (!app.code) return;
+  const resume = leerResume();
+  if (!resumeVigente(resume)) {
+    // No se avisa al servidor: expirar la comodidad de auto-resume no equivale
+    // a abandonar el Mundialito ni a borrar la participación.
+    salirDeSala({ notificar: false, volverAlGrupo: false });
+    pantallaInicio(app.root);
+    return;
+  }
+  pulsoHeartbeat();
+  try {
+    const estado = await net.estado(app.code);
+    if (estado?.room) alCambiarEstado(estado);
+  } catch {
+    // Conserva el contexto: el polling y el próximo regreso visible reintentan.
+  }
+}
+
 export function soyHost() {
   return app.estado?.room?.host_id === miJugadorId();
 }
@@ -253,12 +418,31 @@ export function miJugador() {
   return app.estado?.players?.find(p => p.id === miJugadorId());
 }
 
+// Ir a background o ser descargado por Safari conserva solo contexto local;
+// nunca ejecuta leave_room_and_handoff ni borra una participación.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') guardarResume();
+  else reconciliarAlVolverVisible();
+});
+window.addEventListener('pagehide', () => guardarResume());
+window.addEventListener('pageshow', () => {
+  if (document.visibilityState !== 'hidden') reconciliarAlVolverVisible();
+});
+let reintentoResumePorRed = false;
+window.addEventListener('online', async () => {
+  if (reintentoResumePorRed || app.code || !app.root) return;
+  reintentoResumePorRed = true;
+  const reanudado = await intentarReanudarAutomaticamente();
+  if (!reanudado) reintentoResumePorRed = false;
+});
+
 // arranque
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   app.root = $('#app');
-  // La sesión y la sala persistidas se conservan, pero nunca definen la primera
-  // pantalla: cada carga empieza deliberadamente en la portada.
-  pantallaInicio(app.root);
+  // La portada sigue siendo el inicio normal. Solo un contexto muy reciente,
+  // autenticado y aún participante puede recuperar su Mundialito automáticamente.
+  const reanudado = await intentarReanudarAutomaticamente();
+  if (!reanudado) pantallaInicio(app.root);
 });
 
 window.addEventListener('error', e => {

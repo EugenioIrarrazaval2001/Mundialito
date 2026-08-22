@@ -651,14 +651,42 @@ function elegirGoleadorActivo(rng, estado) {
   return candidatos[candidatos.length - 1].jugador;
 }
 
-function golesConEventosActivos(rng, cantidad, estado, desdeMin, hastaMin) {
-  const eventos = [];
+function sortearMinutoGol(rng, desdeMin, hastaMin, minutosGolOcupados) {
   const duracion = hastaMin - desdeMin + 1;
+  const minutosDisponibles = [];
+  for (let minuto = desdeMin; minuto <= hastaMin; minuto++) {
+    if (!minutosGolOcupados.has(minuto)) minutosDisponibles.push(minuto);
+  }
+
+  // Caso extremo: el segmento completo ya contiene goles. Conservamos un
+  // sorteo determinista dentro de ese mismo tramo y evitamos un loop infinito.
+  if (!minutosDisponibles.length) return desdeMin + rng.int(duracion);
+
+  // El primer intento conserva exactamente el sorteo anterior. Solo cuando
+  // colisiona se consumen sorteos adicionales del mismo RNG sembrado.
+  const maxIntentos = Math.max(12, duracion * 4);
+  for (let intento = 0; intento < maxIntentos; intento++) {
+    const minuto = desdeMin + rng.int(duracion);
+    if (!minutosGolOcupados.has(minuto)) {
+      minutosGolOcupados.add(minuto);
+      return minuto;
+    }
+  }
+
+  // Salvaguarda para un RNG anómalo que repita siempre minutos ocupados: no
+  // desplaza el gol de segmento y sigue eligiendo aleatoriamente un minuto libre.
+  const minuto = minutosDisponibles[rng.int(minutosDisponibles.length)];
+  minutosGolOcupados.add(minuto);
+  return minuto;
+}
+
+function golesConEventosActivos(rng, cantidad, estado, desdeMin, hastaMin, minutosGolOcupados) {
+  const eventos = [];
   for (let i = 0; i < cantidad; i++) {
     const goleador = elegirGoleadorActivo(rng, estado);
     if (!goleador) continue;
     eventos.push({
-      minuto: desdeMin + rng.int(duracion),
+      minuto: sortearMinutoGol(rng, desdeMin, hastaMin, minutosGolOcupados),
       jugador: goleador.nombre,
       jugadorId: goleador.id,
       equipoId: estado.equipo.id,
@@ -685,15 +713,15 @@ function fuerzaActiva(estado) {
   };
 }
 
-function simularSegmento(rng, estadoA, estadoB, desdeMin, hastaMin, etapa, eventos) {
+function simularSegmento(rng, estadoA, estadoB, desdeMin, hastaMin, etapa, eventos, minutosGolOcupados) {
   if (hastaMin < desdeMin) return { golesA: 0, golesB: 0 };
   const duracion = hastaMin - desdeMin + 1;
   const fA = fuerzaActiva(estadoA), fB = fuerzaActiva(estadoB);
   const golesA = rng.poisson(lambdaGoles(fA.ataque, fB.defensa, etapa) * duracion / 90);
   const golesB = rng.poisson(lambdaGoles(fB.ataque, fA.defensa, etapa) * duracion / 90);
   eventos.push(
-    ...golesConEventosActivos(rng, golesA, estadoA, desdeMin, hastaMin),
-    ...golesConEventosActivos(rng, golesB, estadoB, desdeMin, hastaMin),
+    ...golesConEventosActivos(rng, golesA, estadoA, desdeMin, hastaMin, minutosGolOcupados),
+    ...golesConEventosActivos(rng, golesB, estadoB, desdeMin, hastaMin, minutosGolOcupados),
   );
   return { golesA, golesB };
 }
@@ -707,11 +735,13 @@ function simularPrefijoAntesDeExpulsion(
   minutoExpulsion,
   etapa,
   eventos,
+  minutosGolOcupados,
 ) {
   // Una roja no debe volver a sortear el pasado. Previsualizamos el segmento
   // completo que el motor habría generado hasta su próxima frontera legacy,
   // conservamos literalmente su prefijo y descartamos solo el futuro afectado.
   const temporales = [];
+  const minutosTemporales = new Set(minutosGolOcupados);
   simularSegmento(
     rng,
     estadoA,
@@ -720,9 +750,11 @@ function simularPrefijoAntesDeExpulsion(
     hastaPlanificado,
     etapa,
     temporales,
+    minutosTemporales,
   );
   const preservados = temporales.filter(evento => evento.minuto < minutoExpulsion);
   eventos.push(...preservados);
+  preservados.forEach(evento => minutosGolOcupados.add(evento.minuto));
   return {
     golesA: preservados.filter(evento => evento.equipoId === estadoA.equipo.id).length,
     golesB: preservados.filter(evento => evento.equipoId === estadoB.equipo.id).length,
@@ -747,6 +779,7 @@ function simularPeriodo(
   etapa,
   intentos,
   eventos,
+  minutosGolOcupados,
   disciplina = null,
 ) {
   let cursor = desdeMin;
@@ -813,8 +846,11 @@ function simularPeriodo(
         minuto,
         etapa,
         eventos,
+        minutosGolOcupados,
       )
-      : simularSegmento(rng, estadoA, estadoB, cursor, minuto - 1, etapa, eventos);
+      : simularSegmento(
+        rng, estadoA, estadoB, cursor, minuto - 1, etapa, eventos, minutosGolOcupados,
+      );
     golesA += tramo.golesA; golesB += tramo.golesB;
 
     // Convención del minuto compartido: expulsión, sustitución y luego goles.
@@ -853,7 +889,9 @@ function simularPeriodo(
     estadoA,
     estadoB,
   );
-  const tramoFinal = simularSegmento(rng, estadoA, estadoB, cursor, hastaMin, etapa, eventos);
+  const tramoFinal = simularSegmento(
+    rng, estadoA, estadoB, cursor, hastaMin, etapa, eventos, minutosGolOcupados,
+  );
   return { golesA: golesA + tramoFinal.golesA, golesB: golesB + tramoFinal.golesB };
 }
 
@@ -936,6 +974,7 @@ function simularPartidoInterno(rng, eqA, eqB, conDesempate, override, etapa, dis
   const estadoA = crearEstadoPartido(eqA);
   const estadoB = crearEstadoPartido(eqB);
   const eventos = [];
+  const minutosGolOcupados = new Set();
   const disciplinaRegular = disciplina ? {
     rng: disciplina.rng,
     programa: programarDisciplinaPeriodo(disciplina.rng, 1, 90),
@@ -943,6 +982,7 @@ function simularPartidoInterno(rng, eqA, eqB, conDesempate, override, etapa, dis
   const regulares = simularPeriodo(
     rng, estadoA, estadoB, 1, 90, etapa,
     intentosDeCambios(rng, VENTANAS_CAMBIOS), eventos,
+    minutosGolOcupados,
     disciplinaRegular,
   );
   const goles90A = regulares.golesA, goles90B = regulares.golesB;
@@ -960,6 +1000,7 @@ function simularPartidoInterno(rng, eqA, eqB, conDesempate, override, etapa, dis
     const extra = simularPeriodo(
       rng, estadoA, estadoB, 91, 120, etapa,
       intentosDeCambios(rng, VENTANAS_ALARGUE), eventos,
+      minutosGolOcupados,
       disciplinaExtra,
     );
     golesA += extra.golesA;

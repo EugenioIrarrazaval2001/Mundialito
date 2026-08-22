@@ -1038,13 +1038,6 @@ body:has(.overlay-selecciones-mundiales) { overflow: hidden; }
   line-height: 1.15;
 }
 .evento-mayor-cabecera strong { min-width: 0; overflow-wrap: anywhere; }
-.evento-mayor-cabecera time {
-  font-family: var(--fuente-numeros);
-  font-size: 0.84rem;
-  font-weight: 700;
-  letter-spacing: 0;
-  opacity: 0.72;
-}
 .evento-icono-mayor { font-size: 1.15rem; line-height: 1; }
 .evento-jugador { font-size: 0.94rem; line-height: 1.1; }
 .evento-mayor small { font-size: 0.7rem; line-height: 1.15; opacity: 0.78; }
@@ -1132,10 +1125,6 @@ tr.mi-fila, .lista-grupo li.mi-fila { outline: 2px solid var(--dorado); }
 .tabla-goleadores td { padding: 7px 10px; border-top: 1px solid rgba(0,0,0,0.12); }
 
 /* ---------- draft estilo pizarra 7a0 (3 columnas) ---------- */
-
-/* La configuración inicial empieza directamente en la elección de formación.
-   La cabecera compartida vuelve a mostrarse al iniciar el armado del equipo. */
-.draft-configuracion-inicial > .cabecera-sala { display: none; }
 
 .draft7 {
   display: grid;
@@ -3306,7 +3295,7 @@ body:has(.overlay-resumen-ronda) { overflow: hidden; }
   align-items: end;
   gap: 14px;
   max-width: 840px;
-  margin: 22px auto 14px;
+  margin: 10px auto 14px;
 }
 
 .podio-tarjeta {
@@ -4064,9 +4053,19 @@ select:focus {
   box-shadow: 0 18px 40px rgba(0,0,0,0.32);
 }
 
-.grupo-ultimo-campeon::after { color: rgba(232,200,115,0.07); }
-.grupo-ultimo-campeon strong { overflow-wrap: anywhere; }
-.grupo-ultimo-campeon h2 { color: var(--dorado-claro); }
+.grupo-ultimo-campeon::after {
+  color: rgba(244,236,216,0.16);
+  text-shadow: 0 1px 0 rgba(0,0,0,0.2);
+}
+.grupo-ultimo-campeon strong {
+  color: var(--crema-luz);
+  overflow-wrap: anywhere;
+  text-shadow: 0 2px 3px rgba(0,0,0,0.36);
+}
+.grupo-ultimo-campeon h2 {
+  color: #f5d887;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.3);
+}
 
 .grupo-accion,
 .grupo-config-torneo { padding: 21px; }
@@ -4347,6 +4346,13 @@ select:focus {
 .pasto7::after { bottom: -2px; border-bottom: 0; }
 
 .fila-cancha7 { position: relative; z-index: 1; }
+
+/* Dupla de delanteros centro: simétrica alrededor del eje y separada con una
+   distancia relativa a la cancha, sin afectar los tríos EI/DC/ED. */
+.fila-cancha7.fila-doble-dc {
+  justify-content: center;
+  gap: 1.5%;
+}
 
 .slot { min-height: 88px; touch-action: manipulation; }
 
@@ -5322,7 +5328,7 @@ select:focus {
 
   .celebracion { padding: 22px 11px; box-shadow: var(--sombra-panel-movil); }
   .campeon-label { letter-spacing: 0.18em; }
-  .podio-final { margin-top: 17px; gap: 9px; }
+  .podio-final { margin-top: 10px; gap: 9px; }
   .podio-tarjeta,
   .podio-primero,
   .podio-segundo,

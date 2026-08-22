@@ -16,17 +16,6 @@ function nivelesOcultos(room, draft) {
   return parseModo(room.modo).modo === 'almanaque' && !draft.enviado;
 }
 
-// Chip de estado del header: antes de empezar muestra el modo; una vez iniciado,
-// la formación muestra su identidad táctica derivada y el modo.
-function chipEstadoTexto(draft, room) {
-  const m = parseModo(room.modo).modo;
-  const corto = m === 'penales' ? 'SOLO PENALES' : 'SELECCIONES HISTÓRICAS';
-  const emoji = m === 'penales' ? '🧤' : '📖';
-  if (!draft.iniciado) return `${emoji} ${corto}`;
-  const categoria = tacticaDeFormacion(draft.formacion).categoria;
-  return `${draft.formacion} · ${categoria} · ${corto}`;
-}
-
 const PROGRESO_DRAFT_VERSION = 4;
 const COMODINES_POR_TIPO = 3;
 const CUOTAS_BANCA = Object.freeze({ POR: 1, DEF: 2, MED: 2, DEL: 2 });
@@ -622,8 +611,11 @@ function filasVisualesCancha(slots) {
   })).filter(fila => fila.slots.length);
 }
 
-function coordenadaHorizontalMini(indice, total) {
+function coordenadaHorizontalMini(indice, total, esDobleDC = false) {
   if (total <= 1) return 50;
+  // Dos DC son una dupla central, no extremos. Solo afecta la coordenada
+  // visual de esta fila y no el slotIndex ni la identidad de los puestos.
+  if (esDobleDC) return indice === 0 ? 43 : 57;
   // Deja margen para círculos de 21px en móvil y reparte cada línea simétrica.
   const margen = 14;
   return margen + (indice * (100 - 2 * margen)) / (total - 1);
@@ -636,7 +628,11 @@ function posicionesMiniCancha(formacion) {
   return filasVisualesCancha(slots).flatMap(fila =>
     fila.slots.map((slot, indice) => ({
       puesto: slot.puesto,
-      x: coordenadaHorizontalMini(indice, fila.slots.length),
+      x: coordenadaHorizontalMini(
+        indice,
+        fila.slots.length,
+        fila.slots.length === 2 && fila.slots.every(({ puesto }) => puesto === 'DC'),
+      ),
       y: COORDENADAS_MINICANCHA[slot.puesto]?.y ?? fila.miniY,
     })));
 }
@@ -691,24 +687,8 @@ function selectorFormacionesHTML(draft) {
 // ---------- UI ----------
 
 function dibujarTodo(root, draft) {
-  const { room } = app.estado;
-
   render(root, html`
     <div class="draft ${!draft.iniciado ? 'draft-configuracion-inicial' : ''}">
-      <header class="cabecera-sala">
-        <div class="ticket"><span class="ticket-label">${app.grupo?.group ? 'GRUPO' : 'SALA'}</span>
-          <span class="ticket-codigo ${app.grupo?.group ? 'ticket-grupo' : ''}">${esc(app.grupo?.group?.displayName || app.grupo?.group?.display_name || room.group_name || room.code)}</span></div>
-        <div class="sorteo-resultado">
-          <span class="sorteo-label">ARMA TU COMBINADO HISTÓRICO</span>
-          <span class="sorteo-equipo">
-            Elección <span id="turno-num">${Math.min(totalElegidos(draft) + 1, 18)}</span>/18 ·
-            XI <span id="xi-num">${totalTitulares(draft)}</span>/11 ·
-            BANCA <span id="banca-num">${totalBanca(draft)}</span>/7
-          </span>
-        </div>
-        <span class="chip-modo" id="chip-estado">${chipEstadoTexto(draft, room)}</span>
-      </header>
-
       <div class="draft7 ${!draft.iniciado ? 'draft7-configuracion' : ''}">
         <section class="panel-izq" id="panel-izq"></section>
         <section class="cancha7" id="cancha7"></section>
@@ -734,14 +714,6 @@ function dibujarEstado(root, draft) {
   dibujarPanelIzq(root, draft);
   dibujarCancha(root, draft);
   dibujarBox(root, draft);
-  const turno = $('#turno-num', root);
-  if (turno) turno.textContent = Math.min(totalElegidos(draft) + 1, 18);
-  const xi = $('#xi-num', root);
-  if (xi) xi.textContent = totalTitulares(draft);
-  const banca = $('#banca-num', root);
-  if (banca) banca.textContent = totalBanca(draft);
-  const chip = $('#chip-estado', root);
-  if (chip) chip.textContent = chipEstadoTexto(draft, app.estado.room);
 }
 
 function dibujarPanelIzq(root, draft) {
@@ -931,6 +903,7 @@ function dibujarCancha(root, draft) {
   const pickEn = i => draft.picks.find(p => p.slotIndex === i);
 
   const filas = filasVisualesCancha(slots).map(({ slots: slotsFilaVisual }) => {
+    const esDobleDC = slotsFilaVisual.length === 2 && slotsFilaVisual.every(({ puesto }) => puesto === 'DC');
     const slotsFila = slotsFilaVisual
       .map(({ puesto, i }) => {
         const pick = pickEn(i);
@@ -963,7 +936,7 @@ function dibujarCancha(root, draft) {
             </span>
           </button>`;
       });
-    return `<div class="fila-cancha7">${slotsFila.join('')}</div>`;
+    return `<div class="fila-cancha7 ${esDobleDC ? 'fila-doble-dc' : ''}">${slotsFila.join('')}</div>`;
   }).join('');
 
   const bancaPorCategoria = Object.fromEntries(

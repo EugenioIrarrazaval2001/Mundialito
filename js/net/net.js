@@ -169,10 +169,12 @@ async function onlineUnirse(code, nombre) {
 
 async function onlineEstado(code) {
   const sb = await client();
-  const [{ data: room }, { data: players }] = await Promise.all([
+  const [{ data: room, error: errorRoom }, { data: players, error: errorPlayers }] = await Promise.all([
     sb.from('rooms').select().eq('code', code).maybeSingle(),
     sb.from('players').select().eq('room_code', code).order('joined_at'),
   ]);
+  if (errorRoom) throw errorRoom;
+  if (errorPlayers) throw errorPlayers;
   return { room, players: players ?? [] };
 }
 

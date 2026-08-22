@@ -921,18 +921,13 @@ function eventosTimeline(p, hastaMin = Infinity) {
   });
 }
 
-function nombreEquipoEvento(mundial, equipoId) {
-  return nombrePlano(mundial, equipoId) || equipoId || 'Equipo';
-}
-
-function textoEventoHTML(evento, mundial, p) {
+function textoEventoHTML(evento) {
   if (evento.tipo === 'gol') {
     return `<span class="evento-mayor-cabecera">` +
       `<span class="evento-icono evento-icono-mayor" aria-hidden="true">⚽</span>` +
-      `<strong>GOL</strong><time>${evento.minuto}'</time></span>` +
+      `<strong>GOL</strong></span>` +
       `<b class="evento-jugador">${esc(nombreGoleador(evento))}</b>` +
-      `<small>${esc(nombreEquipoEvento(mundial, p.idA))} ${evento.marcadorA}–${evento.marcadorB} ` +
-      `${esc(nombreEquipoEvento(mundial, p.idB))}</small>`;
+      `<small>${evento.marcadorA}–${evento.marcadorB}</small>`;
   }
   if (evento.tipo === 'roja_directa' || evento.tipo === 'segunda_amarilla') {
     const esDoble = evento.tipo === 'segunda_amarilla';
@@ -940,20 +935,19 @@ function textoEventoHTML(evento, mundial, p) {
     const titulo = esDoble ? 'SEGUNDA AMARILLA · EXPULSADO' : 'EXPULSADO · ROJA DIRECTA';
     return `<span class="evento-mayor-cabecera">` +
       `<span class="evento-icono evento-icono-mayor" aria-hidden="true">${icono}</span>` +
-      `<strong>${titulo}</strong><time>${evento.minuto}'</time></span>` +
+      `<strong>${titulo}</strong></span>` +
       `<b class="evento-jugador">${esc(nombreJugador(evento.jugadorId))}</b>` +
-      `<small>${esc(nombreEquipoEvento(mundial, evento.equipoId))} queda con ` +
-      `${evento.jugadoresRestantes} jugadores</small>`;
+      `<small>Queda con ${evento.jugadoresRestantes} jugadores</small>`;
   }
   if (evento.tipo === 'amarilla') {
     return `<span class="evento-icono" aria-hidden="true">🟨</span>` +
       `<span><b>${esc(nombreJugador(evento.jugadorId))}</b>` +
-      `<small>Tarjeta amarilla · ${esc(nombreEquipoEvento(mundial, evento.equipoId))}</small></span>`;
+      `<small>Tarjeta amarilla</small></span>`;
   }
   return `<span class="evento-icono cambio-icono" aria-hidden="true">⇄</span>` +
     `<span><b>Entra ${esc(nombreJugador(evento.entraId))}</b>` +
     `<small>Sale ${esc(nombreJugador(evento.saleId))}${evento.puesto ? ` · ${esc(evento.puesto)}` : ''}` +
-    ` · ${esc(nombreEquipoEvento(mundial, evento.equipoId))}</small></span>`;
+    `</small></span>`;
 }
 
 function timelinePartidoHTML(mundial, p, hastaMin = Infinity, animarExpulsionesDesde = Infinity) {
@@ -971,8 +965,8 @@ function timelinePartidoHTML(mundial, p, hastaMin = Infinity, animarExpulsionesD
       evento.minuto === hastaMin && evento.minuto > animarExpulsionesDesde;
     return `<div class="timeline-evento ${lado} ${claseTipo} ` +
       `${esMayor ? 'evento-mayor' : 'evento-menor'}${esReciente ? ' evento-reciente' : ''}">` +
-      `<span class="timeline-contenido">${textoEventoHTML(evento, mundial, p)}</span>` +
-      `${esMayor ? '' : `<time>${evento.minuto}'</time>`}</div>`;
+      `<span class="timeline-contenido">${textoEventoHTML(evento)}</span>` +
+      `<time>${evento.minuto}'</time></div>`;
   }).join('');
 }
 
@@ -1978,8 +1972,6 @@ function construirPasos(mundial) {
       const esMioCampeon = campeon.id === 'h-' + miJugadorId();
       return html`
         <div class="celebracion">
-          <div class="confeti">🎉🎊⚽🏆</div>
-          <p class="campeon-label">PODIO DEL MUNDIALITO</p>
           <div class="podio-final">${podioFinalHTML(m)}</div>
           ${campeon.esIA
             ? '<p class="campeon-dt">El Bot se quedó con el Mundialito. 😅</p>'

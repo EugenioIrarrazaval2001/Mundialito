@@ -355,12 +355,196 @@ function conectarLanding(root) {
   if (window.matchMedia?.('(pointer: fine)').matches) input.focus();
 }
 
-function htmlGateMiembro(grupo, dashboard) {
+const inicio = { paso: 'portada', grupo: null, dashboard: null };
+
+function botonVolver(destino) {
+  return html`<button type="button" class="inicio-volver" data-inicio-volver="${destino}">← Volver</button>`;
+}
+
+function htmlInicioPortada() {
+  return html`
+    <main class="inicio inicio-portada">
+      <div class="inicio-portada-contenido">
+        <img class="inicio-copa" src="assets/copa-del-mundo-750x485.jpg" alt="Copa del Mundo" />
+        <h1>MUNDIALITO</h1>
+        <button type="button" class="btn inicio-comenzar" data-inicio-comenzar>COMENZAR</button>
+      </div>
+    </main>`;
+}
+
+function htmlInicioOpciones() {
+  return html`
+    <main class="inicio inicio-opciones">
+      ${botonVolver('portada')}
+      <div class="inicio-acciones">
+        <button type="button" class="btn inicio-accion" data-inicio-crear>CREAR GRUPO NUEVO</button>
+        <button type="button" class="btn inicio-accion" data-inicio-unir>UNIRSE A GRUPO EXISTENTE</button>
+      </div>
+    </main>`;
+}
+
+function htmlInicioCrear() {
+  return html`
+    <main class="inicio inicio-formulario">
+      ${botonVolver('opciones')}
+      <section class="inicio-panel" aria-labelledby="inicio-titulo-crear">
+        <h1 id="inicio-titulo-crear">CREAR GRUPO NUEVO</h1>
+        <form id="form-inicio-crear" novalidate>
+          <div class="campo"><label for="inicio-nombre-grupo">Nombre del grupo</label>
+            <input id="inicio-nombre-grupo" maxlength="50" autocomplete="organization" autocapitalize="words" spellcheck="false" required /></div>
+          <div class="campo"><label for="inicio-nombre-miembro">Tu nombre</label>
+            <input id="inicio-nombre-miembro" maxlength="30" autocomplete="name" required /></div>
+          <div class="inicio-pin-doble">
+            <div class="campo"><label for="inicio-pin">Crea tu PIN</label>
+              <input id="inicio-pin" type="password" inputmode="numeric" autocomplete="new-password" minlength="4" maxlength="6" pattern="[0-9]{4,6}" required /></div>
+            <div class="campo"><label for="inicio-pin-confirmar">Repite tu PIN</label>
+              <input id="inicio-pin-confirmar" type="password" inputmode="numeric" autocomplete="new-password" minlength="4" maxlength="6" pattern="[0-9]{4,6}" required /></div>
+          </div>
+          <p id="inicio-error-crear" class="inicio-error" role="alert" hidden></p>
+          <button type="submit" class="btn inicio-confirmar">CREAR GRUPO</button>
+        </form>
+      </section>
+    </main>`;
+}
+
+function htmlInicioUnir() {
+  return html`
+    <main class="inicio inicio-formulario">
+      ${botonVolver('opciones')}
+      <section class="inicio-panel" aria-labelledby="inicio-titulo-unir">
+        <h1 id="inicio-titulo-unir">UNIRSE A GRUPO EXISTENTE</h1>
+        <form id="form-inicio-unir" novalidate>
+          <div class="campo"><label for="inicio-buscar-grupo">Nombre del grupo</label>
+            <input id="inicio-buscar-grupo" maxlength="50" autocomplete="organization" autocapitalize="words" spellcheck="false" required /></div>
+          <p id="inicio-error-unir" class="inicio-error" role="alert" hidden></p>
+          <button type="submit" class="btn inicio-confirmar">BUSCAR GRUPO</button>
+        </form>
+      </section>
+    </main>`;
+}
+
+function mostrarErrorInicio(campo, input, mensaje) {
+  campo.textContent = mensaje || '';
+  campo.hidden = !mensaje;
+  input?.setAttribute('aria-invalid', String(Boolean(mensaje)));
+}
+
+function conectarInicioCrear(root) {
+  const form = $('#form-inicio-crear', root);
+  const grupoInput = $('#inicio-nombre-grupo', root);
+  const nombreInput = $('#inicio-nombre-miembro', root);
+  const pinInput = $('#inicio-pin', root);
+  const confirmarInput = $('#inicio-pin-confirmar', root);
+  const errorCampo = $('#inicio-error-crear', root);
+  form.addEventListener('submit', async evento => {
+    evento.preventDefault();
+    const validacion = validarClaveGrupo(grupoInput.value);
+    const nombre = nombreInput.value.trim().replace(/\s+/g, ' ');
+    const pin = pinInput.value.trim();
+    const confirmar = confirmarInput.value.trim();
+    if (!validacion.valida) return mostrarErrorInicio(errorCampo, grupoInput, validacion.error || 'Escribe un nombre de grupo válido.');
+    if (nombre.length < 2) return mostrarErrorInicio(errorCampo, nombreInput, 'Escribe un nombre de al menos 2 caracteres.');
+    if (!PIN_VALIDO.test(pin)) return mostrarErrorInicio(errorCampo, pinInput, 'El PIN debe tener entre 4 y 6 dígitos.');
+    if (pin !== confirmar) return mostrarErrorInicio(errorCampo, confirmarInput, 'Los dos PIN no coinciden.');
+    mostrarErrorInicio(errorCampo, grupoInput, '');
+    bloquearFormulario(form, true, 'Creando…');
+    try {
+      const display = limpiarNombreGrupo(validacion.display);
+      const existente = primerObjeto(await net.grupoBuscar(display));
+      if (existente) {
+        mostrarErrorInicio(errorCampo, grupoInput, 'Ya existe un grupo con ese nombre. Puedes unirte a él desde "Unirse a grupo existente".');
+        bloquearFormulario(form, false);
+        return;
+      }
+      const creado = primerObjeto(await net.grupoCrear(display));
+      if (!creado) throw new Error('El servidor no devolvió el grupo creado.');
+      const respuesta = await net.grupoCrearMiembro({ groupId: idGrupo(creado), nombre, pin });
+      pinInput.value = '';
+      confirmarInput.value = '';
+      await completarIdentidad(creado, respuesta);
+    } catch (error) {
+      pinInput.value = '';
+      confirmarInput.value = '';
+      bloquearFormulario(form, false);
+      mostrarErrorInicio(errorCampo, grupoInput, error?.message || 'No se pudo crear el grupo.');
+    }
+  });
+}
+
+function conectarInicioUnir(root) {
+  const form = $('#form-inicio-unir', root);
+  const input = $('#inicio-buscar-grupo', root);
+  const errorCampo = $('#inicio-error-unir', root);
+  form.addEventListener('submit', async evento => {
+    evento.preventDefault();
+    const validacion = validarClaveGrupo(input.value);
+    if (!validacion.valida) return mostrarErrorInicio(errorCampo, input, validacion.error || 'Escribe un nombre de grupo válido.');
+    input.value = validacion.display;
+    mostrarErrorInicio(errorCampo, input, '');
+    bloquearFormulario(form, true, 'Buscando…');
+    try {
+      const grupo = primerObjeto(await net.grupoBuscar(validacion.display));
+      if (!grupo) {
+        bloquearFormulario(form, false);
+        mostrarErrorInicio(errorCampo, input, 'No encontramos un grupo con ese nombre.');
+        return;
+      }
+      const dashboard = await net.grupoDashboard(idGrupo(grupo));
+      inicio.paso = 'identidad';
+      inicio.grupo = dashboard?.group || grupo;
+      inicio.dashboard = dashboard || {};
+      pantallaInicio(root);
+    } catch (error) {
+      bloquearFormulario(form, false);
+      mostrarErrorInicio(errorCampo, input, error?.message || 'No se pudo buscar el grupo.');
+    }
+  });
+}
+
+/** Portada obligatoria y flujo manual para entrar a un grupo. */
+export function pantallaInicio(root) {
+  const paso = inicio.paso;
+  if (paso === 'portada') render(root, htmlInicioPortada());
+  else if (paso === 'opciones') render(root, htmlInicioOpciones());
+  else if (paso === 'crear') render(root, htmlInicioCrear());
+  else if (paso === 'unir') render(root, htmlInicioUnir());
+  else if (paso === 'identidad' && inicio.grupo) render(root,
+    htmlGateMiembro(inicio.grupo, inicio.dashboard, { onboarding: true }));
+  else { inicio.paso = 'portada'; return pantallaInicio(root); }
+
+  $('[data-inicio-comenzar]', root)?.addEventListener('click', () => {
+    inicio.paso = 'opciones'; pantallaInicio(root);
+  });
+  $('[data-inicio-crear]', root)?.addEventListener('click', () => {
+    inicio.paso = 'crear'; pantallaInicio(root);
+  });
+  $('[data-inicio-unir]', root)?.addEventListener('click', () => {
+    inicio.paso = 'unir'; pantallaInicio(root);
+  });
+  root.querySelectorAll('[data-inicio-volver]').forEach(boton => boton.addEventListener('click', () => {
+    inicio.paso = boton.dataset.inicioVolver;
+    inicio.grupo = null;
+    inicio.dashboard = null;
+    pantallaInicio(root);
+  }));
+  if (paso === 'crear') conectarInicioCrear(root);
+  if (paso === 'unir') conectarInicioUnir(root);
+  if (paso === 'identidad') conectarGate(root, inicio.grupo, { onVolver: () => {
+    inicio.paso = 'unir'; inicio.grupo = null; inicio.dashboard = null; pantallaInicio(root);
+  } });
+}
+
+function htmlGateMiembro(grupo, dashboard, { onboarding = false } = {}) {
   const miembros = miembrosDashboard(dashboard);
   const hayMiembros = miembros.length > 0;
   return html`
     <main class="grupo grupo-identidad">
-      ${cabeceraGrupo(grupo)}
+      ${onboarding ? html`
+        <header class="inicio-identidad-cabecera">
+          <button type="button" class="inicio-volver" data-inicio-volver-identidad>← Volver</button>
+          <p>GRUPO ENCONTRADO</p>
+          <h1>${esc(nombreVisible(grupo, 'Grupo Mundialito'))}</h1>
+        </header>` : cabeceraGrupo(grupo)}
       <section class="grupo-panel grupo-panel-identidad" aria-labelledby="titulo-identidad">
         <div class="grupo-panel-sello" aria-hidden="true">IDENTIDAD</div>
         <h2 id="titulo-identidad">${hayMiembros ? 'IDENTIFÍCATE EN EL GRUPO' : 'GRUPO CREADO'}</h2>
@@ -685,8 +869,10 @@ async function completarIdentidad(grupo, respuesta) {
   await Promise.resolve(entrarAGrupo(grupo, sesion));
 }
 
-function conectarGate(root, grupo) {
+function conectarGate(root, grupo, { onVolver = null } = {}) {
   let operacionEnCurso = false;
+
+  $('[data-inicio-volver-identidad]', root)?.addEventListener('click', () => onVolver?.());
 
   $('#tab-miembro-existente', root)?.addEventListener('click', () => cambiarTabIdentidad(root, 'existente'));
   $('#tab-miembro-nuevo', root)?.addEventListener('click', () => cambiarTabIdentidad(root, 'nuevo'));
@@ -894,8 +1080,10 @@ function conectarDashboard(root, grupo, dashboard) {
 export function pantallaGrupo(root) {
   const grupo = grupoActual();
   if (!grupo) {
-    render(root, htmlLandingGrupo());
-    conectarLanding(root);
+    inicio.paso = 'portada';
+    inicio.grupo = null;
+    inicio.dashboard = null;
+    pantallaInicio(root);
     return;
   }
   const dashboard = dashboardActual();

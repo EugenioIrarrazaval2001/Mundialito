@@ -2,7 +2,7 @@
 
 import { net, ONLINE, miId } from './net/net.js';
 import { $, toast } from './ui/dom.js';
-import { pantallaGrupo } from './ui/grupo.js';
+import { pantallaGrupo, pantallaInicio } from './ui/grupo.js';
 import { pantallaLobby } from './ui/lobby.js';
 import { pantallaDraft } from './ui/draft.js';
 import { pantallaTorneo } from './ui/torneo.js';
@@ -31,16 +31,6 @@ function guardarContextoGrupo() {
     member: app.grupo.member || null,
     expiresAt: app.grupo.expiresAt || null,
   }));
-}
-
-function leerContextoGrupo() {
-  try {
-    const raw = JSON.parse(localStorage.getItem(CONTEXTO_GRUPO_KEY) || 'null');
-    return raw?.group ? raw : null;
-  } catch {
-    localStorage.removeItem(CONTEXTO_GRUPO_KEY);
-    return null;
-  }
 }
 
 export function miJugadorId() {
@@ -203,44 +193,11 @@ export function miJugador() {
 }
 
 // arranque
-document.addEventListener('DOMContentLoaded', async () => {
+document.addEventListener('DOMContentLoaded', () => {
   app.root = $('#app');
-  const contexto = leerContextoGrupo();
-  if (contexto) {
-    app.grupo = contexto;
-    const groupId = idGrupo(contexto.group);
-    if (groupId) {
-      let sesionValida = false;
-      try {
-        const sesion = await net.grupoSesionLeer(groupId);
-        if (sesion?.member?.id && sesion?.token) {
-          sesionValida = true;
-          const member = sesion.member;
-          app.grupo = {
-            ...app.grupo,
-            member,
-            token: sesion.token,
-            expiresAt: sesion.expiresAt,
-          };
-        }
-      } catch { /* el gate permite reclamar otra vez la identidad */ }
-      if (!sesionValida) app.grupo = { ...app.grupo, member: null, token: null, expiresAt: null };
-      await refrescarGrupo({ renderizar: false, silencioso: true });
-    }
-  }
-  const salaGuardada = sessionStorage.getItem('mundialito-sala');
-  if (salaGuardada) {
-    try {
-      const { room } = await net.estado(salaGuardada);
-      if (room) {
-        entrarASala(salaGuardada, { playerId: sessionStorage.getItem('mundialito-player-id') });
-        return;
-      }
-    } catch { /* sin conexión: vamos al home */ }
-    sessionStorage.removeItem('mundialito-sala');
-    sessionStorage.removeItem('mundialito-player-id');
-  }
-  pantallaGrupo(app.root);
+  // La sesión y la sala persistidas se conservan, pero nunca definen la primera
+  // pantalla: cada carga empieza deliberadamente en la portada.
+  pantallaInicio(app.root);
 });
 
 window.addEventListener('error', e => {

@@ -5,7 +5,7 @@ import {
 } from '../net/net.js';
 import { render, html, esc, $, toast } from './dom.js';
 import {
-  app, entrarAGrupo, salirDeGrupo, entrarASala, refrescarGrupo,
+  app, entrarAGrupo, abrirVestuarioGrupo, salirDeGrupo, entrarASala, refrescarGrupo,
 } from '../main.js';
 import {
   abrirUniversoDraft, keysDraftActivas, configuracionDraftValida, resumenUniversoDraft,
@@ -780,17 +780,7 @@ function htmlEstadoTorneo(activo) {
         </div>
         <button type="button" class="btn btn-mini btn-cerrar-config" aria-label="Cerrar configuración">Cerrar</button>
       </div>
-      <fieldset class="grupo-modos">
-        <legend>Modo de juego</legend>
-        <label class="grupo-modo-card">
-          <input type="radio" name="grupo-modo" value="almanaque" checked />
-          <span><strong>Selecciones históricas</strong><small>Niveles ocultos, pura memoria futbolera</small></span>
-        </label>
-        <label class="grupo-modo-card">
-          <input type="radio" name="grupo-modo" value="penales" />
-          <span><strong>Solo Penales</strong><small>Eliminación directa definida desde los doce pasos</small></span>
-        </label>
-      </fieldset>
+      <p class="nota">Selecciones históricas, con niveles ocultos y pura memoria futbolera.</p>
       <div class="grupo-universo-fila">
         <div>
           <strong>Universo del draft</strong>
@@ -838,6 +828,44 @@ function htmlDashboard(grupo, dashboard) {
         </section>
       </div>
     </main>`;
+}
+
+function htmlVestuarioNoDisponible(grupo, error) {
+  return html`
+    <main class="grupo grupo-vestuario-no-disponible">
+      ${cabeceraGrupo(grupo, { mostrarMiembro: true })}
+      <section class="grupo-panel">
+        <p class="grupo-sobretitulo">MUNDIALITO EN CURSO</p>
+        <h2>No puedes entrar a este Mundialito</h2>
+        <p class="grupo-intro">${esc(error || 'El torneo ya comenzó y solo pueden retomarlo quienes ya participaban.')}</p>
+        <button type="button" class="btn btn-mini btn-ranking-historico">RANKING HISTÓRICO</button>
+      </section>
+    </main>`;
+}
+
+/** El historial se mantiene intacto, pero se consulta como vista secundaria del vestuario. */
+export function abrirRankingHistorico(disparador) {
+  if (document.querySelector('.overlay-ranking-historico')) return;
+  const dashboard = dashboardActual();
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay-ranking-historico';
+  overlay.innerHTML = html`
+    <section class="panel-ranking-historico" role="dialog" aria-modal="true" aria-labelledby="titulo-ranking-historico">
+      <header class="ranking-historico-cabecera">
+        <div><p class="grupo-sobretitulo">ARCHIVO DEL GRUPO</p><h2 id="titulo-ranking-historico">RANKING HISTÓRICO</h2></div>
+        <button type="button" class="btn btn-mini btn-cerrar-ranking">Cerrar</button>
+      </header>
+      ${htmlUltimoCampeon(dashboard)}
+      <section class="grupo-panel grupo-panel-ranking"><h3>MEDALLERO</h3>${htmlRanking(dashboard)}</section>
+      <section class="grupo-panel grupo-panel-historial"><h3>ÚLTIMOS MUNDIALITOS</h3>${htmlHistorial(dashboard)}</section>
+    </section>`;
+  const cerrar = () => {
+    overlay.remove();
+    disparador?.focus?.();
+  };
+  overlay.querySelector('.btn-cerrar-ranking').addEventListener('click', cerrar);
+  overlay.addEventListener('click', evento => { if (evento.target === overlay) cerrar(); });
+  document.body.appendChild(overlay);
 }
 
 function cambiarTabIdentidad(root, tab) {
@@ -987,7 +1015,7 @@ function conectarDashboard(root, grupo, dashboard) {
     try {
       let respuesta;
       if (accion === 'iniciar') {
-        const modoBase = root.querySelector('input[name="grupo-modo"]:checked')?.value || 'almanaque';
+        const modoBase = 'almanaque';
         if (!configuracionDraftValida(modoBase)) {
           throw new Error('Activa al menos un plantel para el draft.');
         }
@@ -1027,7 +1055,7 @@ function conectarDashboard(root, grupo, dashboard) {
     btnNuevo.closest('.grupo-accion').hidden = true;
     config.hidden = false;
     config.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    config.querySelector('input[name="grupo-modo"]')?.focus();
+    config.querySelector('.btn-configurar-universo')?.focus();
   });
   $('.btn-cerrar-config', root)?.addEventListener('click', () => {
     config.hidden = true;
@@ -1036,7 +1064,7 @@ function conectarDashboard(root, grupo, dashboard) {
   });
 
   const resumenUniverso = () => {
-    const modo = root.querySelector('input[name="grupo-modo"]:checked')?.value || 'almanaque';
+    const modo = 'almanaque';
     const { activos, total } = resumenUniversoDraft(modo);
     const valido = configuracionDraftValida(modo);
     const salida = $('.grupo-universo-resumen', root);
@@ -1052,12 +1080,10 @@ function conectarDashboard(root, grupo, dashboard) {
 
   $('.btn-configurar-universo', root)?.addEventListener('click', evento => {
     abrirUniversoDraft(evento.currentTarget, {
-      modo: () => root.querySelector('input[name="grupo-modo"]:checked')?.value || 'almanaque',
+      modo: 'almanaque',
       alCambiar: resumenUniverso,
     });
   });
-  root.querySelectorAll('input[name="grupo-modo"]').forEach(input =>
-    input.addEventListener('change', resumenUniverso));
   $('.btn-crear-torneo', root)?.addEventListener('click', () => ejecutarIngreso('iniciar'));
 
   $('.btn-refrescar-grupo', root)?.addEventListener('click', async evento => {
@@ -1100,7 +1126,16 @@ export function pantallaGrupo(root) {
     conectarGate(root, grupo);
     return;
   }
-  render(root, htmlDashboard(grupo, dashboard));
-  conectarSalida(root);
-  conectarDashboard(root, grupo, dashboard);
+  if (app.grupo?.vestuarioError) {
+    render(root, htmlVestuarioNoDisponible(grupo, app.grupo.vestuarioError));
+    conectarSalida(root);
+    $('.btn-ranking-historico', root)?.addEventListener('click', evento => abrirRankingHistorico(evento.currentTarget));
+    return;
+  }
+  render(root, html`
+    <main class="grupo grupo-cargando-vestuario"><p class="nota">Abriendo vestuario…</p></main>`);
+  Promise.resolve(abrirVestuarioGrupo()).catch(error => {
+    app.grupo = { ...app.grupo, vestuarioError: error?.message || 'No se pudo abrir el vestuario.' };
+    pantallaGrupo(root);
+  });
 }

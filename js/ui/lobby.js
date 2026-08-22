@@ -2,12 +2,36 @@
 
 import { net, ONLINE, MAX_JUGADORES } from '../net/net.js';
 import { render, html, esc, $, $$, toast } from './dom.js';
-import { app, soyHost, salirDeSala, miJugadorId } from '../main.js';
-import { parseModo } from '../engine/engine.js';
+import { app, soyHost, salirDeGrupo, miJugadorId } from '../main.js';
+import {
+  abrirUniversoDraft, configuracionDraftValida, establecerPlantelesDraftActivos,
+  keysDraftActivas, resumenUniversoDraft,
+} from './home.js';
+import { abrirRankingHistorico } from './grupo.js';
 
 // Vive fuera de `dibujar`: Realtime repinta el Lobby durante los updates del
 // bucle, pero no debe recrear un botón habilitado ni iniciar un segundo bucle.
 const iniciosDraftEnCurso = new Set();
+const guardadosPlantelesEnCurso = new Map();
+
+function guardarPlantelesVestuario(room, grupo) {
+  const code = room.code;
+  const anterior = guardadosPlantelesEnCurso.get(code) || Promise.resolve();
+  // El selector puede emitir varios cambios seguidos. Serializarlos conserva el
+  // último gesto del anfitrión incluso si la red responde fuera de orden.
+  const siguiente = anterior.catch(() => {}).then(() => net.grupoConfigurarVestuario({
+    groupId: grupo?.id ?? grupo?.group_id,
+    memberId: app.grupo?.member?.id,
+    sessionToken: app.grupo?.token,
+    enabledSquads: keysDraftActivas(),
+  }));
+  guardadosPlantelesEnCurso.set(code, siguiente);
+  siguiente.catch(error => {
+    toast(error?.message || 'No se pudo guardar la configuración de planteles.', true);
+  }).finally(() => {
+    if (guardadosPlantelesEnCurso.get(code) === siguiente) guardadosPlantelesEnCurso.delete(code);
+  });
+}
 
 export function pantallaLobby(root) {
   const code = app.estado.room.code;
@@ -23,6 +47,7 @@ export function pantallaLobby(root) {
 
 function dibujar(root) {
   const { room, players } = app.estado;
+  establecerPlantelesDraftActivos(room.enabled_squads);
   const host = soyHost();
   const jugadorId = miJugadorId();
   const grupo = app.grupo?.group;
@@ -30,31 +55,33 @@ function dibujar(root) {
   const esTorneoDeGrupo = Boolean(grupo || room.group_id);
   const esLocal = !ONLINE || room.code === 'LOCAL' || room.code.startsWith('LOCAL-');
   const iniciandoDraft = iniciosDraftEnCurso.has(room.code);
+  const ahora = Date.now();
+  const jugadoresConectados = players.filter(player => {
+    const visto = Date.parse(player.last_seen || '');
+    return !Number.isFinite(visto) || ahora - visto < 45000;
+  });
   const salaLlena = players.length >= MAX_JUGADORES;
   const salaSobrepasada = players.length > MAX_JUGADORES;
+  const { activos, total } = resumenUniversoDraft('almanaque');
 
   render(root, html`
     <div class="lobby">
       <header class="cabecera-sala">
-        <button id="btn-salir" class="btn btn-mini" ${iniciandoDraft ? 'disabled' : ''}>← Salir</button>
+        <button id="btn-salir" class="btn btn-mini" ${iniciandoDraft ? 'disabled' : ''}>Salir del grupo</button>
         <div class="ticket">
           <span class="ticket-label">${esTorneoDeGrupo ? 'GRUPO' : 'CÓDIGO DE SALA'}</span>
           <span class="ticket-codigo ${esTorneoDeGrupo ? 'ticket-grupo' : ''}">${esc(identidadPrincipal)}</span>
         </div>
-        <span class="chip-modo">${parseModo(room.modo).modo === 'penales'
-          ? '🧤 SOLO PENALES' : '📖 SELECCIONES HISTÓRICAS'}
-          · ${parseModo(room.modo).total} EQUIPOS</span>
+        <span class="chip-modo">MUNDIALITO · 32 EQUIPOS</span>
       </header>
 
-      <h2 class="titulo-seccion">Vestuario <span class="contador">(${players.length}/${MAX_JUGADORES} ${players.length === 1 ? 'jugador' : 'jugadores'})</span></h2>
-      ${esLocal ? '' : html`<p class="nota centrada">${esTorneoDeGrupo
-        ? `Los demás jugadores pueden entrar usando la clave <b>${esc(identidadPrincipal)}</b>.`
-        : `Comparte el código <b>${esc(room.code)}</b> para que los demás jugadores se unan.`}</p>`}
+      <h2 class="titulo-seccion">VESTUARIO <span class="contador">— ${jugadoresConectados.length}/${MAX_JUGADORES}</span></h2>
+      ${esLocal ? '' : html`<p class="nota centrada">DT conectados ahora en <b>${esc(identidadPrincipal)}</b>.</p>`}
       ${salaLlena && !salaSobrepasada ? '<p class="nota centrada">Sala llena: este es el máximo para un mundial de 32 equipos.</p>' : ''}
       ${salaSobrepasada ? html`<p class="nota centrada error-lobby">Hay ${players.length} jugadores, pero el máximo es ${MAX_JUGADORES}. Deben salir ${players.length - MAX_JUGADORES} antes de empezar.</p>` : ''}
 
       <ul class="lista-jugadores">
-        ${players.map((p, i) => html`
+        ${jugadoresConectados.map((p, i) => html`
           <li class="jugador-item ${p.id === jugadorId ? 'soy-yo' : ''}">
             <span class="dorsal">${i + 1}</span>
             <span class="nombre-jugador">${esc(p.name)}</span>
@@ -65,20 +92,46 @@ function dibujar(root) {
           </li>`).join('')}
       </ul>
 
+      <section class="vestuario-planteles" aria-labelledby="titulo-planteles-vestuario">
+        <div>
+          <p class="grupo-sobretitulo">UNIVERSO DEL DRAFT</p>
+          <h3 id="titulo-planteles-vestuario">PLANTELES HABILITADOS</h3>
+          <p class="nota vestuario-resumen-planteles">${activos} / ${total}</p>
+        </div>
+        ${host
+          ? '<button id="btn-configurar-planteles" class="btn btn-mini">CONFIGURAR PLANTELES</button>'
+          : '<p class="nota">La configuración la define el DT anfitrión.</p>'}
+      </section>
+
       ${host ? html`
         <div class="acciones-centro">
           <button id="btn-repartir" class="btn btn-primario btn-grande" ${iniciandoDraft ? 'disabled' : ''}>
-            🎲 Empezar el draft
+            COMENZAR MUNDIALITO
           </button>
           <p class="nota">${esLocal
             ? 'Armarás tu equipo de 11 titulares y 7 suplentes a punta de sorteos, y jugarás contra selecciones de la máquina.'
             : 'Cada DT armará 11 titulares y 7 suplentes: en cada turno se sortea una selección histórica y elige un jugador.'}</p>
         </div>` : html`
-        <p class="nota centrada esperando">Esperando que ${esc(players.find(p => p.id === room.host_id)?.name ?? 'el anfitrión')} sortee los planteles…</p>`}
+        <p class="nota centrada esperando">Esperando que el DT anfitrión comience el Mundialito…</p>`}
+
+      <div class="vestuario-historial-accion">
+        <button id="btn-ranking-historico" class="btn btn-mini">RANKING HISTÓRICO</button>
+      </div>
     </div>
   `);
 
-  $('#btn-salir', root).addEventListener('click', salirDeSala);
+  $('#btn-salir', root).addEventListener('click', salirDeGrupo);
+  $('#btn-ranking-historico', root)?.addEventListener('click', evento => abrirRankingHistorico(evento.currentTarget));
+
+  $('#btn-configurar-planteles', root)?.addEventListener('click', evento => {
+    abrirUniversoDraft(evento.currentTarget, {
+      modo: 'almanaque',
+      alCambiar: () => {
+        if (!configuracionDraftValida('almanaque')) return;
+        guardarPlantelesVestuario(room, grupo);
+      },
+    });
+  });
 
   // el anfitrión puede sacar a un jugador antes de empezar (si alguien se desconecta)
   $$('.btn-kick', root).forEach(b => b.addEventListener('click', async () => {
@@ -99,12 +152,20 @@ function dibujar(root) {
         toast(`Máximo ${MAX_JUGADORES} jugadores. Hay ${players.length}.`, true);
         return;
       }
+      if (!configuracionDraftValida('almanaque')) {
+        toast('Activa al menos un plantel para el draft.', true);
+        return;
+      }
       iniciosDraftEnCurso.add(room.code);
       btn.disabled = true;
       $('#btn-salir', root).disabled = true;
       const puedeContinuar = () =>
         app.code === room.code && app.estado?.room?.status === 'lobby' && soyHost();
       try {
+        // No iniciar con un snapshot viejo si el anfitrión acaba de tocar el
+        // selector: el draft debe recibir exactamente enabled_squads compartido.
+        await (guardadosPlantelesEnCurso.get(room.code) || Promise.resolve());
+        if (!puedeContinuar()) { iniciosDraftEnCurso.delete(room.code); return; }
         for (const p of players) {
           if (!puedeContinuar()) { iniciosDraftEnCurso.delete(room.code); return; }
           await net.actualizarJugador(room.code, p.id, {

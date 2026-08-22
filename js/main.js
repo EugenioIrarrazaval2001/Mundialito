@@ -21,6 +21,13 @@ export const app = {
 const CONTEXTO_GRUPO_KEY = 'mundialito-grupo-contexto';
 
 function idGrupo(group) { return group?.id || group?.group_id || null; }
+function extraerIngresoVestuario(respuesta) {
+  const dato = Array.isArray(respuesta) ? respuesta[0] : (respuesta?.data ?? respuesta);
+  const code = dato?.code ?? dato?.room_code ?? dato?.roomCode;
+  const playerId = dato?.playerId ?? dato?.player_id ?? dato?.player?.id;
+  if (!code || !playerId) throw new Error('No se pudo abrir el vestuario del grupo.');
+  return { code, playerId };
+}
 function guardarContextoGrupo() {
   if (!app.grupo?.group) {
     localStorage.removeItem(CONTEXTO_GRUPO_KEY);
@@ -103,8 +110,44 @@ export async function entrarAGrupo(groupOrDashboard, sesion = {}) {
   }
   guardarContextoGrupo();
   if (!dashboard) await refrescarGrupo({ renderizar: false, silencioso: true });
-  if (!app.code) pantallaGrupo(app.root);
+  if (!app.code) await abrirVestuarioGrupo();
   return app.grupo;
+}
+
+// El vestuario es una room lobby persistida: el grupo conserva identidad e
+// historial; la room conserva presencia, anfitrión, draft y torneo.
+export async function abrirVestuarioGrupo() {
+  if (app.code) return app.code;
+  const group = app.grupo?.group;
+  const member = app.grupo?.member;
+  const token = app.grupo?.token;
+  if (!idGrupo(group) || !member?.id || !token) return null;
+  const parametros = {
+    groupId: idGrupo(group), memberId: member.id, sessionToken: token,
+  };
+  let respuesta;
+  try {
+    // La RPC bloquea el grupo y es la fuente de verdad: intentar crear primero
+    // evita depender de un dashboard que pudo quedar desactualizado al terminar
+    // el Mundialito anterior. Si ya existe una room activa, abajo se reutiliza.
+    respuesta = await net.grupoIniciarTorneo({ ...parametros, modo: 'almanaque|32', enabledSquads: null });
+  } catch (error) {
+    // Dos DT pueden intentar crear el vestuario a la vez. La RPC bloquea el
+    // grupo y crea solo una room; quien pierde la carrera se une a esa misma.
+    if (/Mundialito activo/i.test(error?.message || '')) {
+      try { respuesta = await net.grupoUnirseTorneo(parametros); }
+      catch (joinError) { error = joinError; }
+    }
+    if (!respuesta) {
+      app.grupo = { ...app.grupo, vestuarioError: error?.message || 'No se pudo abrir el vestuario.' };
+      pantallaGrupo(app.root);
+      return null;
+    }
+  }
+  const { code, playerId } = extraerIngresoVestuario(respuesta);
+  app.grupo = { ...app.grupo, vestuarioError: null };
+  entrarASala(code, { playerId });
+  return code;
 }
 
 export async function salirDeGrupo() {
@@ -144,8 +187,13 @@ export function salirDeSala({ notificar = true, volverAlGrupo = true } = {}) {
   sessionStorage.removeItem('mundialito-sala');
   sessionStorage.removeItem('mundialito-player-id');
   if (volverAlGrupo) {
-    pantallaGrupo(app.root);
-    refrescarGrupo({ renderizar: true, silencioso: true });
+    if (status === 'finished' && app.grupo?.member && app.grupo?.token) {
+      refrescarGrupo({ renderizar: false, silencioso: true })
+        .finally(() => abrirVestuarioGrupo());
+    } else {
+      pantallaGrupo(app.root);
+      refrescarGrupo({ renderizar: true, silencioso: true });
+    }
   }
   // Se hace después de soltar la suscripción para que la baja local/online no
   // vuelva a dibujar la pantalla que acabamos de abandonar.

@@ -49,6 +49,17 @@ export function keysDraftActivas() {
   return keysActivasOrdenadas();
 }
 
+// El vestuario comparte su configuración mediante room.enabled_squads. Antes de
+// abrir el selector, el cliente adopta ese snapshot para no mostrar toggles de
+// otro torneo o de una visita anterior al grupo.
+export function establecerPlantelesDraftActivos(keys) {
+  const permitidas = new Set(SQUADS_HISTORICAS_AMPLIADAS.map(squad => squad.key));
+  enabledSquadKeys.clear();
+  for (const key of (Array.isArray(keys) ? keys : permitidas)) {
+    if (permitidas.has(key)) enabledSquadKeys.add(key);
+  }
+}
+
 export function configuracionDraftValida(modo = 'almanaque') {
   return squadsParaModo(modo, keysActivasOrdenadas()).length > 0;
 }
@@ -381,15 +392,7 @@ export function pantallaHome(root) {
         <section class="tarjeta">
           <h2>Crear una sala</h2>
           <p class="nota">Tú serás el anfitrión: repartes los planteles y das el pitazo inicial.</p>
-          <div class="campo">
-            <label>Modo de juego</label>
-            <div class="opciones-modo">
-              <label class="radio"><input type="radio" name="modo" value="almanaque" checked />
-                <span><b>Selecciones históricas</b> — niveles ocultos, pura memoria futbolera</span></label>
-              <label class="radio"><input type="radio" name="modo" value="penales" />
-                <span><b>Solo Penales</b> — eliminación directa: cada partido se define en una tanda y tú pateas la tuya</span></label>
-            </div>
-          </div>
+          <p class="nota">Mundialito usa selecciones históricas, con niveles ocultos y pura memoria futbolera.</p>
           <button type="button" id="btn-selecciones-mundiales" class="btn">
             Configurar universo del draft
           </button>
@@ -405,12 +408,11 @@ export function pantallaHome(root) {
         </section>
       </div>
 
-      <footer class="home-pie">155 planteles históricos + 16 octavofinalistas de 2026 · 2 modos de juego</footer>
+      <footer class="home-pie">155 planteles históricos + 16 octavofinalistas de 2026</footer>
     </div>
   `);
 
-  const modoSeleccionado = () =>
-    root.querySelector('input[name=modo]:checked')?.value || 'almanaque';
+  const modoSeleccionado = () => 'almanaque';
   let solicitudEnCurso = false;
   // enabled_squads limita solo la ruleta del draft. Los rivales del torneo se
   // reconstruyen siempre desde el universo base completo del modo.

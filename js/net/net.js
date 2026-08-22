@@ -296,6 +296,17 @@ async function onlineGrupoUnirseTorneo(argumento) {
   });
 }
 
+async function onlineGrupoConfigurarVestuario(argumento) {
+  const p = argumento ?? {};
+  return llamarRpc('configure_persistent_group_lobby', {
+    p_group_id: p.groupId ?? p.group_id,
+    p_member_id: p.memberId ?? p.member_id,
+    p_session_token: p.sessionToken ?? p.session_token,
+    p_enabled_squads: Array.isArray(p.enabledSquads ?? p.enabled_squads)
+      ? [...(p.enabledSquads ?? p.enabled_squads)] : null,
+  });
+}
+
 async function onlineGrupoFinalizarTorneo(argumento, memberId, sessionToken, podium) {
   const p = argumento && typeof argumento === 'object'
     ? argumento
@@ -638,6 +649,28 @@ async function localGrupoUnirseTorneo(argumento) {
   return { code: room.code, playerId: player.id, status: room.status };
 }
 
+async function localGrupoConfigurarVestuario(argumento) {
+  const p = argumento ?? {};
+  const groupId = p.groupId ?? p.group_id;
+  const memberId = p.memberId ?? p.member_id;
+  const enabledSquads = p.enabledSquads ?? p.enabled_squads;
+  if (!Array.isArray(enabledSquads) || !enabledSquads.length) {
+    throw new Error('Activa al menos un plantel para el draft.');
+  }
+  const db = cargarBaseGruposLocal();
+  await autenticarSesionLocal(db, groupId, memberId, p.sessionToken ?? p.session_token);
+  const room = salaActivaLocal(db, groupId);
+  if (!room || room.status !== 'lobby') throw new Error('El vestuario ya no está disponible.');
+  const host = (room.players ?? []).find(player => player.id === room.host_id);
+  if (!host || host.member_id !== memberId) throw new Error('Solo el DT anfitrión puede configurar planteles.');
+  room.enabled_squads = [...enabledSquads];
+  room.updated_at = new Date().toISOString();
+  guardarBaseGruposLocal(db);
+  if (local.room?.code === room.code) local.room.enabled_squads = [...enabledSquads];
+  localEmitir();
+  return { code: room.code, enabled_squads: [...enabledSquads] };
+}
+
 function entradaPodioLocal(entrada, indice, players) {
   const place = Number(entrada?.place ?? entrada?.lugar ?? indice + 1);
   const indicado = entrada?.playerId ?? entrada?.player_id;
@@ -796,6 +829,7 @@ export const net = ONLINE
       grupoSesionGuardar, grupoSesionLeer, grupoSesionBorrar,
       grupoIniciarTorneo: onlineGrupoIniciarTorneo,
       grupoUnirseTorneo: onlineGrupoUnirseTorneo,
+      grupoConfigurarVestuario: onlineGrupoConfigurarVestuario,
       grupoFinalizarTorneo: onlineGrupoFinalizarTorneo,
     }
   : {
@@ -813,5 +847,6 @@ export const net = ONLINE
       grupoSesionGuardar, grupoSesionLeer, grupoSesionBorrar,
       grupoIniciarTorneo: localGrupoIniciarTorneo,
       grupoUnirseTorneo: localGrupoUnirseTorneo,
+      grupoConfigurarVestuario: localGrupoConfigurarVestuario,
       grupoFinalizarTorneo: localGrupoFinalizarTorneo,
     };

@@ -15,7 +15,7 @@ import {
   resolverPenalConRng,
 } from '../engine/engine.js';
 import { Rng } from '../engine/rng.js';
-import { copaMundialitoSvg, medallaMundialitoSvg } from './icons.js';
+import { medallaMundialitoSvg } from './icons.js';
 
 // en players.resultados conviven las tandas (clave del partido) y datos
 // internos con prefijo '_' (_paso/_reproduccion del anfitrión y _t_<clave>
@@ -701,7 +701,9 @@ function podioDelMundial(mundial) {
         teamId: equipo.id,
         displayName,
         squadKey: equipo.squadKey,
-        nombreHtml: squad ? `${bandera(squad, 22)} ${esc(displayName)}` : esc(displayName),
+        nombreHtml: squad
+          ? `<span class="flag-slot podio-bandera">${bandera(squad, 18)}</span>${esc(displayName)}`
+          : esc(displayName),
         detailHtml: 'Selección histórica · máquina',
       };
     })
@@ -713,7 +715,7 @@ function podioFinalHTML(mundial) {
     const clase = item.place === 1 ? 'podio-primero'
       : item.place === 2 ? 'podio-segundo' : 'podio-tercero';
     const premio = item.place === 1
-      ? copaMundialitoSvg({ className: 'icono-copa podio-copa', title: 'Copa del Mundialito' })
+      ? '<img class="icono-copa podio-copa copa-sticker" src="assets/stickerCopa.png" alt="Copa del Mundialito" />'
       : medallaMundialitoSvg(item.place === 2 ? 'plata' : 'bronce', {
         className: 'icono-medalla',
         title: item.place === 2 ? 'Medalla de plata' : 'Medalla de bronce',

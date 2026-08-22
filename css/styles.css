@@ -3349,6 +3349,7 @@ body:has(.overlay-resumen-ronda) { overflow: hidden; }
 }
 
 .podio-premio .podio-copa { width: 76px; height: 102px; }
+.podio-premio .podio-copa.copa-sticker { display: block; object-fit: contain; }
 .podio-premio .icono-medalla { width: 65px; height: 81px; }
 
 .podio-nombre {
@@ -3361,6 +3362,13 @@ body:has(.overlay-resumen-ronda) { overflow: hidden; }
   overflow-wrap: anywhere;
 }
 
+.podio-nombre .podio-bandera {
+  width: 30px;
+  height: 20px;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
 .podio-detalle {
   position: relative;
   z-index: 1;
@@ -3368,6 +3376,64 @@ body:has(.overlay-resumen-ronda) { overflow: hidden; }
   font-size: 0.78rem;
   line-height: 1.25;
   opacity: 0.72;
+}
+
+/* Vestuario del grupo: presencia y configuración antes que el archivo histórico. */
+.vestuario-planteles {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 18px 0;
+  padding: 15px;
+  background: var(--crema-luz);
+  border: 1px solid var(--tinta-suave);
+  border-left: 5px solid var(--dorado);
+  color: var(--tinta);
+}
+
+.vestuario-planteles h3 { margin: 2px 0 0; font-family: var(--fuente-display); font-size: 1.15rem; }
+.vestuario-resumen-planteles { margin: 2px 0 0; font-size: 1.15rem; font-weight: 800; }
+.vestuario-historial-accion { display: flex; justify-content: center; margin-top: 18px; }
+
+.overlay-ranking-historico {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  overflow-y: auto;
+  padding: max(14px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+    max(14px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  background: rgba(3,20,17,0.88);
+}
+
+.panel-ranking-historico {
+  width: min(960px, 100%);
+  margin: auto;
+  padding: clamp(15px, 3vw, 28px);
+  background: var(--crema);
+  color: var(--tinta);
+  border: 2px solid var(--dorado);
+  box-shadow: 0 16px 40px rgba(0,0,0,0.45);
+}
+
+.ranking-historico-cabecera {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.ranking-historico-cabecera h2 { font-family: var(--fuente-display); font-size: clamp(1.5rem, 6vw, 2.3rem); }
+.panel-ranking-historico .grupo-ultimo-campeon { margin-top: 0; }
+.panel-ranking-historico .grupo-panel { margin-top: 14px; }
+
+@media (max-width: 700px) {
+  .vestuario-planteles { align-items: stretch; flex-direction: column; }
+  .vestuario-planteles .btn { width: 100%; }
+  .ranking-historico-cabecera { align-items: stretch; flex-direction: column; }
+  .ranking-historico-cabecera .btn { width: 100%; }
+  .panel-ranking-historico { padding: 13px 10px; }
 }
 
 .finalizacion-grupo {

@@ -4,11 +4,12 @@
 // 6 comodines en dos bolsas independientes: 3 para otra selección del mismo
 // Mundial y 3 para la misma selección en otro Mundial.
 
-import { net } from '../net/net.js';
+import { net, CICLO_VIDA, ahoraServidor } from '../net/net.js';
 import { render, html, esc, $, $$, toast } from './dom.js';
-import { app, soyHost, miJugadorId } from '../main.js';
+import { app, soyHost, miJugadorId, capturarNavegacion } from '../main.js';
 import { SQUADS, SQUADS_BY_KEY, FORMACION_SLOTS, JUGADORES_BY_ID, RESULTADO_MUNDIAL, TACTICA_POR_FORMACION, bandera, estadoPuestoJugador, estiloDeFormacion, lineaDePuesto, nivelEnPuesto, puestosJugador, squadsParaModo, tacticaDeFormacion } from '../data/squads.js';
 import { lineupDesdeSlots, parseModo } from '../engine/engine.js';
+import { firmaProgreso, leerRespaldoDraft, escribirRespaldoDraft } from './draft-progress.js';
 
 // En Almanaque los candidatos permanecen ocultos; titulares y suplentes revelan
 // su nivel al colocarlos. Los promedios siguen ocultos hasta enviar el equipo.
@@ -57,16 +58,16 @@ const COORDENADAS_MINICANCHA = Object.freeze({
 
 function claveProgresoDraft(room, playerId) {
   if (!room?.code || room.seed == null || !playerId) return null;
-  return `mundialito-draft-${room.code}-${room.seed}-${playerId}`;
+  return `mundialito-draft-${room.id}-${room.seed}-${playerId}`;
 }
 
 function limpiarProgresoDraft(draft) {
   if (!draft?.storageKey) return;
-  try { sessionStorage.removeItem(draft.storageKey); } catch { /* almacenamiento no disponible */ }
+  try { localStorage.removeItem(draft.storageKey); } catch { /* almacenamiento no disponible */ }
 }
 
 function guardarProgresoDraft(draft) {
-  if (!draft?.storageKey) return;
+  if (!draft?.storageKey || !draft.activo?.()) return;
   if (draft.enviado) { limpiarProgresoDraft(draft); return; }
   const estilo = estiloDeFormacion(draft.formacion);
   draft.estilo = estilo;
@@ -90,16 +91,50 @@ function guardarProgresoDraft(draft) {
     iniciado: draft.iniciado,
     // girando es deliberadamente transitorio: al recargar se muestra la oferta ya decidida.
   };
-  try { sessionStorage.setItem(draft.storageKey, JSON.stringify(progreso)); } catch { /* sin cuota */ }
+  const signature = firmaProgreso(progreso);
+  if (signature === draft.confirmado || draft.syncBusy) return;
+  escribirRespaldoDraft(draft.storageKey, { ...progreso, _revision: draft.revision, _pending: true });
+  draft.syncBusy = true; draft.syncError = null;
+  draft.syncPromise = net.guardarDraft(draft.code, { expectedRevision: draft.revision, state: progreso }).then(res => {
+    if (!draft.activo()) return;
+    draft.revision = res.revision; draft.confirmado = signature;
+    escribirRespaldoDraft(draft.storageKey, { ...progreso, _revision: res.revision, _pending: false });
+  }).catch(error => {
+    if (!draft.activo()) return;
+    if (draft.enviado) return;
+    if (error.code === 'DRAFT_CONFLICT' && error.state) {
+      escribirRespaldoDraft(draft.storageKey, error.state);
+      Object.assign(draft, restaurarProgresoDraft(draft, app.estado.room, error.state));
+      draft.revision = error.revision; draft.confirmado = firmaProgreso(error.state);
+      toast('Se recuperó el progreso confirmado en la otra pestaña.');
+    } else draft.syncError = error.message;
+  }).finally(() => {
+    draft.syncBusy = false;
+    if (!draft.activo()) return;
+    if (!draft.syncError) dibujarEstado(draft.root, draft);
+    else mostrarSincronizacion(draft);
+  });
 }
 
-function restaurarProgresoDraft(base, room) {
+function mostrarSincronizacion(draft) {
+  if (!draft.activo()) return;
+  const layout = $('.draft7', draft.root);
+  if (layout) layout.inert = Boolean(draft.syncBusy || draft.syncError);
+  let aviso = $('.draft-sync', draft.root);
+  if (!aviso) { aviso = document.createElement('div'); aviso.className = 'draft-sync'; draft.root.prepend(aviso); }
+  aviso.textContent = draft.syncError ? 'Progreso pendiente: ' + draft.syncError : draft.syncBusy ? 'Guardando progreso…' : 'Progreso confirmado';
+  if (draft.syncError) {
+    const retry = document.createElement('button'); retry.className='btn btn-mini'; retry.textContent='Reintentar guardado';
+    retry.onclick=()=>{draft.syncError=null;dibujarEstado(draft.root,draft);}; aviso.appendChild(retry);
+  }
+}
+
+function restaurarProgresoDraft(base, room, servidor = null) {
   if (!base.storageKey) return null;
   let raw;
   try {
-    const guardado = sessionStorage.getItem(base.storageKey);
-    if (!guardado) return null;
-    raw = JSON.parse(guardado);
+    raw = servidor || leerRespaldoDraft(base.storageKey);
+    if (!raw) return null;
   } catch {
     limpiarProgresoDraft(base);
     return null;
@@ -238,12 +273,14 @@ function restaurarProgresoDraft(base, room) {
 export function pantallaDraft(root) {
   const yo = app.estado.players.find(p => p.id === miJugadorId());
   const { room } = app.estado;
+  if (!yo) return;
 
   const formacionInicial = Object.hasOwn(FORMACION_SLOTS, yo.formacion) ? yo.formacion : '4-3-3';
   const picksIniciales = slotsDesdeLineup(formacionInicial, yo.lineup);
   const benchInicial = benchDesdeLineup(yo.lineup, picksIniciales);
   const tieneLineupServidor = Boolean(yo.lineup);
   const base = {
+    code: room.code, root, revision: yo.draft_revision || 0, activo: capturarNavegacion(), timers: new Set(),
     formacion: formacionInicial,
     // Los lineups ya enviados conservan su estilo histórico. Un draft nuevo lo
     // deriva siempre de la formación, empezando por el default actual 4-3-3.
@@ -264,14 +301,45 @@ export function pantallaDraft(root) {
     enviando: false,
     storageKey: claveProgresoDraft(room, yo.id),
   };
+  if (!leerRespaldoDraft(base.storageKey) && !yo.draft_state) {
+    try {
+      const anterior = sessionStorage.getItem(`mundialito-draft-${room.code}-${room.seed}-${yo.id}`);
+      if (anterior) escribirRespaldoDraft(base.storageKey, JSON.parse(anterior));
+    } catch { /* Un respaldo antiguo inválido no impide recuperar el servidor. */ }
+  }
   if (yo.ready || tieneLineupServidor) limpiarProgresoDraft(base);
-  const draft = (!yo.ready && !tieneLineupServidor && restaurarProgresoDraft(base, room)) || base;
+  const backup = leerRespaldoDraft(base.storageKey);
+  let progresoServidor = null;
+  if (yo.draft_state && !(backup?._pending && backup._revision === base.revision)) {
+    progresoServidor = yo.draft_state;
+    escribirRespaldoDraft(base.storageKey, progresoServidor);
+    base.confirmado = firmaProgreso(progresoServidor);
+  }
+  const draft = (!yo.ready && !tieneLineupServidor && restaurarProgresoDraft(base, room, progresoServidor)) || base;
 
   dibujarTodo(root, draft);
 
-  const handler = () => actualizarRivales(root);
+  const handler = () => {
+    if (!draft.activo()) return;
+    const current = app.estado.players.find(p => p.id === yo.id);
+    if (current?.ready && !draft.enviado) {
+      draft.formacion = current.formacion;
+      draft.picks = slotsDesdeLineup(current.formacion, current.lineup);
+      draft.bench = benchDesdeLineup(current.lineup, draft.picks);
+      draft.enviado = true; draft.syncError = null;
+      dibujarEstado(root,draft);
+    }
+    if (current?.draft_revision > draft.revision && !draft.syncBusy && current.draft_state) {
+      escribirRespaldoDraft(draft.storageKey, current.draft_state);
+      Object.assign(draft, restaurarProgresoDraft(draft, room, current.draft_state));
+      draft.revision = current.draft_revision; draft.confirmado = firmaProgreso(current.draft_state);
+      draft.syncError = null;
+      dibujarEstado(root,draft);
+    }
+    actualizarRivales(root);
+  };
   document.addEventListener('sala:cambio', handler);
-  app.limpiezaPantalla = () => document.removeEventListener('sala:cambio', handler);
+  app.limpiezaPantalla = () => { draft.activo = () => false; draft.timers.forEach(clearTimeout); document.removeEventListener('sala:cambio', handler); };
 }
 
 // ---------- lógica ----------
@@ -464,6 +532,7 @@ function girarYSortear(root, draft, candidatas = null) {
   let tick = 0, delay = 50;
   const TICKS = 9;
   const paso = () => {
+    if (!draft.activo()) return;
     tick++;
     const s = tick >= TICKS ? elegida : pool[Math.floor(Math.random() * pool.length)];
     const el = $('#ruleta', root);
@@ -474,10 +543,10 @@ function girarYSortear(root, draft, candidatas = null) {
       <span class="salio-mundial">Mundial ${s.anio}</span>`;
     if (tick < TICKS) {
       delay *= 1.18; // se va frenando como ruleta
-      setTimeout(paso, delay);
+      draft.timers.add(setTimeout(paso, delay));
     } else {
       el.classList.add('ruleta-final');
-      setTimeout(() => { draft.girando = false; dibujarEstado(root, draft); }, 400);
+      draft.timers.add(setTimeout(() => { if (!draft.activo()) return; draft.girando = false; dibujarEstado(root, draft); }, 400));
     }
   };
   paso();
@@ -706,6 +775,7 @@ function dibujarTodo(root, draft) {
 }
 
 function dibujarEstado(root, draft) {
+  if (!draft.activo()) return;
   guardarProgresoDraft(draft);
   const vistaDraft = $('.draft', root);
   if (vistaDraft) vistaDraft.classList.toggle('draft-configuracion-inicial', !draft.iniciado);
@@ -714,6 +784,7 @@ function dibujarEstado(root, draft) {
   dibujarPanelIzq(root, draft);
   dibujarCancha(root, draft);
   dibujarBox(root, draft);
+  mostrarSincronizacion(draft);
 }
 
 function dibujarPanelIzq(root, draft) {
@@ -881,15 +952,19 @@ function dibujarPanelIzq(root, draft) {
     draft.enviando = true;
     dibujarEstado(root, draft);
     try {
+      await draft.syncPromise;
+      if (!draft.activo() || draft.syncError) return;
       await net.actualizarJugador(room.code, miJugadorId(), {
+        draft_revision: draft.revision,
         formacion: draft.formacion,
         lineup: lineupDesdeSlots(draft.picks, estilo, draft.bench),
         ready: true,
       });
+      if (!draft.activo()) return;
       draft.enviado = true;
       limpiarProgresoDraft(draft);
     } catch (e) {
-      toast('No se pudo enviar tu equipo: ' + e.message, true);
+      if (draft.activo()) toast('No se pudo enviar tu equipo: ' + e.message, true);
     } finally {
       draft.enviando = false;
       dibujarEstado(root, draft);
@@ -1065,6 +1140,7 @@ function dibujarBox(root, draft) {
 
 function actualizarRivales(root) {
   const { room, players } = app.estado;
+  const vigente = capturarNavegacion();
   const cont = $('#rivales', root);
   if (!cont) return;
 
@@ -1073,8 +1149,8 @@ function actualizarRivales(root) {
     <ul class="lista-rivales">
       ${players.map(p => html`<li class="${p.ready ? 'listo' : ''}">
         ${p.ready ? '✓' : '⏳'} <b>${esc(p.name)}</b>
-        <span class="rival-equipo">${p.ready ? 'equipo listo' : 'armando su equipo…'}</span>
-        ${soyHost() && p.id !== room.host_id
+        <span class="rival-equipo">${p.ready ? 'equipo listo' : 'armando su equipo…'}${p.disconnected_at || ahoraServidor() - Date.parse(p.last_seen) >= CICLO_VIDA.absenceMs ? ' · desconectado' : ''}</span>
+        ${soyHost() && p.id !== room.host_id && (p.disconnected_at || ahoraServidor() - Date.parse(p.last_seen) >= CICLO_VIDA.absenceMs)
           ? `<button class="btn-kick" data-kick="${p.id}" title="Sacar del juego">✕</button>`
           : ''}
       </li>`).join('')}
@@ -1087,7 +1163,7 @@ function actualizarRivales(root) {
     if (!confirm(`¿Sacar a ${pl?.name ?? 'este DT'} del juego? Su equipo no entrará al Mundial.`)) return;
     b.disabled = true;
     try { await net.eliminarJugador(room.code, pid); }
-    catch (e) { b.disabled = false; toast('No se pudo sacar al DT: ' + e.message, true); }
+    catch (e) { if (vigente()) { b.disabled = false; toast('No se pudo sacar al DT: ' + e.message, true); } }
   }));
 
   const zonaHost = $('#zona-host', root);
@@ -1100,8 +1176,8 @@ function actualizarRivales(root) {
       </button>
       ${todosListos ? '' : '<p class="nota centrada">Se habilita cuando todos hayan enviado su equipo.</p>'}`;
     $('#btn-pitazo', root)?.addEventListener('click', async () => {
-      try { await net.actualizarSala(room.code, { status: 'running' }); }
-      catch (e) { toast('No se pudo arrancar: ' + e.message, true); }
+      try { await net.iniciarTorneo(room.code); }
+      catch (e) { if (vigente()) toast('No se pudo arrancar: ' + e.message, true); }
     });
-  }
+  } else if (zonaHost) zonaHost.innerHTML = '';
 }

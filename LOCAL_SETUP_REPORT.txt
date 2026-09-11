@@ -1,0 +1,102 @@
+MUNDIALITO — INFORME DE PREPARACIÓN LOCAL
+
+1. ARCHIVOS CREADOS
+
+- index.html
+  Copia exacta, byte por byte, del documento HTML original index.app.
+- LOCAL_TEST_INSTRUCTIONS.txt
+  Instrucciones simples y lista de comprobación manual.
+- LOCAL_SETUP_REPORT.txt
+  Este informe.
+
+2. ARCHIVOS MODIFICADOS
+
+- js/config.js
+
+3. CAMBIOS EXACTOS REALIZADOS
+
+- SUPABASE_URL se cambió a una cadena vacía: ''.
+- SUPABASE_ANON_KEY se cambió a una cadena vacía: ''.
+- Se creó index.html conservando exactamente el contenido de index.app.
+- No se borró ni modificó index.app.
+
+Con ambas constantes vacías, la expresión:
+
+  Boolean(SUPABASE_URL && SUPABASE_ANON_KEY)
+
+produce false. Por ello, net.js selecciona su implementación local en memoria.
+
+4. ERRORES ENCONTRADOS
+
+- El único documento de entrada se llamaba index.app. Python http.server no lo
+  selecciona automáticamente como página inicial.
+- La configuración contenía una URL y anon key de Supabase, por lo que la
+  aplicación seleccionaba deliberadamente el modo online.
+- No se encontró ningún error adicional que objetivamente impida el flujo local.
+
+5. ERRORES CORREGIDOS
+
+- Se agregó index.html para que http://localhost:8000/ cargue la aplicación.
+- Se vació la configuración de Supabase para activar explícitamente el modo local.
+- No fue necesario cambiar net.js ni la lógica del juego.
+
+6. COSAS QUE NO TOCASTE
+
+- index.app.
+- js/net/net.js y todo su código online/Supabase.
+- Datos de jugadores, ratings y planteles en js/data/squads.js.
+- Motor, fórmulas y probabilidades en js/engine/engine.js.
+- Generador aleatorio en js/engine/rng.js.
+- Draft, formaciones y posiciones en js/ui/draft.js.
+- Torneo y lógica de penales en js/ui/torneo.js.
+- CSS, interfaz y demás módulos.
+- No se creó SQL, backend, autenticación, Realtime nuevo ni multijugador.
+
+7. DEPENDENCIAS EXTERNAS QUE SIGUEN EXISTIENDO
+
+- Google Fonts: fonts.googleapis.com y fonts.gstatic.com.
+- Banderas: flagcdn.com.
+- El import dinámico del SDK de Supabase desde esm.sh permanece en net.js, pero
+  no se ejecuta en modo local porque ONLINE es false y ninguna pantalla accede
+  directamente a Supabase.
+
+Si no hay Internet, el juego base local puede seguir cargando, pero las fuentes
+remotas pueden sustituirse por fuentes del sistema y las banderas pueden no verse.
+
+8. RESULTADO DE LAS VALIDACIONES
+
+[OK] index.html existe.
+[OK] index.app sigue existiendo.
+[OK] index.html es una copia exacta de index.app.
+[OK] index.html referencia css/styles.css.
+[OK] index.html referencia js/main.js.
+[OK] Los 27 imports locales encontrados apuntan a archivos existentes.
+[OK] SUPABASE_URL está vacía.
+[OK] SUPABASE_ANON_KEY está vacía.
+[OK] ONLINE evalúa a false.
+[OK] net selecciona las funciones locales.
+[OK] El código online y createClient siguen presentes.
+[OK] No hay accesos directos a Supabase fuera de net.js.
+[OK] No cambiaron datos, motor, RNG, draft, torneo ni penales.
+[OK] LOCAL_TEST_INSTRUCTIONS.txt existe.
+[OK] El flujo estático permite HOME → LOCAL → LOBBY → DRAFT → ready → running
+     → TORNEO con equipos IA → eliminación/campeón.
+[OK] Prueba HTTP: / respondió 200 y Content-Type text/html.
+[OK] Prueba HTTP: /css/styles.css respondió 200 y Content-Type text/css.
+[OK] Prueba HTTP: /js/main.js respondió 200 y Content-Type text/javascript.
+[OK] El servidor temporal fue detenido y el puerto 8000 quedó libre.
+
+La interacción completa hasta campeón/eliminación queda preparada para la prueba
+manual indicada en LOCAL_TEST_INSTRUCTIONS.txt.
+
+9. COMANDO EXACTO PARA EJECUTAR EL JUEGO
+
+Abrir PowerShell dentro de la carpeta Proyecto_Mundial y ejecutar:
+
+  python -m http.server 8000
+
+10. URL EXACTA PARA ABRIRLO
+
+  http://localhost:8000
+
+LOCAL SETUP STATUS: READY FOR MANUAL TEST

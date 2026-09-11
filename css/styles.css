@@ -33,6 +33,13 @@
   --fuente-numeros: 'Barlow Condensed', sans-serif;
 }
 
+#navegacion-partida { position: fixed; right: 10px; bottom: max(10px, env(safe-area-inset-bottom)); z-index: 2147483646; display: flex; gap: 8px; flex-wrap: wrap; padding: 6px; background: var(--estadio-950); border-radius: 8px; }
+#navegacion-partida[hidden] { display: none; }
+.lobby, .draft, .torneo { padding-bottom: 90px; }
+.inicio-panel .campo input { max-width: 100%; }
+.draft-sync { padding: 8px; color: var(--dorado-claro); }
+.estado-conexion { font-size: .85rem; opacity: .85; }
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {

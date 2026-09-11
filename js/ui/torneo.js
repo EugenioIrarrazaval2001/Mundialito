@@ -3,9 +3,9 @@
 // contra la máquina, la juegas tú: eliges lado al patear y al atajar.
 // Si tu equipo queda eliminado, se acaba el juego para ti.
 
-import { net } from '../net/net.js';
+import { net, CICLO_VIDA, ahoraServidor } from '../net/net.js';
 import { render, html, esc, $, $$, toast } from './dom.js';
-import { app, salirDeSala, miJugadorId, refrescarGrupo } from '../main.js';
+import { app, salirDeSala, miJugadorId, refrescarGrupo, nuevaPartidaRapida, capturarNavegacion } from '../main.js';
 import { SQUADS_BY_KEY, JUGADORES_BY_ID, bandera, nivelEnPuesto, squadsParaModo } from '../data/squads.js';
 import {
   simularMundial,
@@ -57,6 +57,8 @@ function intervaloRelojPorFase(fase) {
 let relojTimer = null;
 let salaHandler = null;
 let resumenRondaOverlay = null;
+let cerrarTandaActual = null;
+let cerrarEliminacionActual = null;
 
 function cerrarResumenRonda() {
   if (!resumenRondaOverlay) return;
@@ -80,13 +82,18 @@ function subfaseCompartida(players, paso) {
 }
 
 export function pantallaTorneo(root) {
+  app.limpiezaPantalla?.();
+  app.limpiezaPantalla = null;
   clearInterval(relojTimer);
   cerrarResumenRonda();
   if (salaHandler) { document.removeEventListener('sala:cambio', salaHandler); salaHandler = null; }
   const { room, players } = app.estado;
+  let montada = true;
+  const identidadVigente = capturarNavegacion();
+  const vigente = () => montada && identidadVigente();
 
   // equipos humanos en orden determinista (igual en todos los clientes)
-  const humanos = players
+  const humanos = (room.roster || players)
     .filter(p => p.ready && p.lineup)
     .sort((a, b) => (a.id < b.id ? -1 : 1))
     .map(p => ({
@@ -115,15 +122,15 @@ export function pantallaTorneo(root) {
   marcarPendientes(mundial, abandonados);
   const pasos = construirPasos(mundial);
 
-  const kPaso = `mundialito-paso-${room.code}-${room.seed}`;
-  const kVisto = `mundialito-visto-${room.code}-${room.seed}`;
-  const kElim = `mundialito-elim-${room.code}-${room.seed}`;
-  const kPodio = `mundialito-podio-${room.code}-${room.seed}`;
+  const kPaso = `mundialito-paso-${room.id}-${room.seed}`;
+  const kVisto = `mundialito-visto-${room.id}-${room.seed}`;
+  const kElim = `mundialito-elim-${room.id}-${room.seed}`;
+  const kPodio = `mundialito-podio-${room.id}-${room.seed}`;
 
   // el anfitrión maneja el ritmo del mundial; los demás siguen su paso
   const esHost = room.host_id === miJugadorId();
   const hostPaso = () => Math.min(
-    Number(app.estado.players.find(p => p.id === room.host_id)?.resultados?._paso ?? 0),
+    Number((app.estado?.players || []).find(p => p.id === room.host_id)?.resultados?._paso ?? 0),
     pasos.length - 1);
   const pasoGuardado = sessionStorage.getItem(kPaso);
   const pasoLocal = Number(pasoGuardado);
@@ -140,7 +147,7 @@ export function pantallaTorneo(root) {
   const pasoEsEliminatorio = indice => !soloPenales && Boolean(pasos[indice]?.eliminatorio);
   const subfaseInicial = () => {
     if (!pasoEsEliminatorio(paso)) return null;
-    const compartida = subfaseCompartida(app.estado.players, paso);
+    const compartida = subfaseCompartida((app.estado?.players || []), paso);
     if (compartida) return compartida;
     const visto = Number(sessionStorage.getItem(kVisto) || -1);
     return esHost && paso <= visto ? 'completo' : 'regular';
@@ -155,50 +162,39 @@ export function pantallaTorneo(root) {
     const estado = $('#estado-finalizacion-grupo', root);
     const reintentar = $('#btn-reintentar-finalizacion', root);
     const volver = $('#btn-volver-grupo', root);
-    if (estado) estado.textContent = 'Podio guardado. El historial del grupo ya está actualizado.';
+    if (!vigente()) return;
+    if (estado) estado.textContent = app.grupo ? 'Podio guardado. Historial del grupo actualizado.' : 'Partida finalizada. Podio confirmado.';
     if (reintentar) reintentar.hidden = true;
     if (volver) volver.disabled = false;
   };
 
   const finalizarTorneoDeGrupo = async () => {
-    const contexto = app.grupo;
-    if (!contexto?.group || !contexto?.member || !contexto?.token) return false;
-    if (!esHost) return finalizacionGrupoCompleta;
-    if (finalizacionGrupoCompleta || finalizacionGrupoEnCurso) return finalizacionGrupoCompleta;
+    if (!vigente() || !esHost || finalizacionGrupoEnCurso || finalizacionGrupoCompleta) return finalizacionGrupoCompleta;
     finalizacionGrupoEnCurso = true;
     const estado = $('#estado-finalizacion-grupo', root);
     const reintentar = $('#btn-reintentar-finalizacion', root);
-    const volver = $('#btn-volver-grupo', root);
-    if (estado) estado.textContent = 'Guardando el podio en el historial del grupo…';
+    if (estado) estado.textContent = 'Confirmando el podio…';
     if (reintentar) reintentar.disabled = true;
-    if (volver) volver.disabled = true;
-    const podio = podioDelMundial(mundial).map(({ place, isAI, teamId, playerId, displayName, squadKey }) => ({
-      place, isAI, teamId, playerId, displayName, squadKey,
-    }));
+    const podium = podioDelMundial(mundial).map(({place,isAI,teamId,playerId,displayName,squadKey}) => ({place,isAI,teamId,playerId,displayName,squadKey}));
     try {
-      await net.grupoFinalizarTorneo({
-        roomCode: room.code,
-        memberId: contexto.member.id,
-        sessionToken: contexto.token,
-        playerId: miJugadorId(),
-        podio,
-      });
+      // La última coordinación puede estar en vuelo al dibujar el podio.
+      // Confirmarla antes del cierre evita escrituras tardías contra finished.
+      await colaPublicacion;
+      if (!vigente()) return false;
+      const respuesta = await net.finalizarSala(room.code, podium);
+      if (!vigente()) return false;
+      if (!respuesta.finalized) throw new Error('El servidor no confirmó el cierre.');
       finalizacionGrupoCompleta = true;
-      if (app.estado?.room) {
-        app.estado.room.status = 'finished';
-        app.estado.room.finalized_at ||= new Date().toISOString();
-      }
       reflejarFinalizacionGrupo();
-      await refrescarGrupo({ silencioso: true });
+      if (app.grupo) await refrescarGrupo({silencioso:true});
       return true;
     } catch (e) {
-      if (estado) estado.textContent = 'No se pudo guardar el podio. Reintenta antes de volver al grupo.';
+      if (!vigente()) return false;
+      if (finalizacionGrupoCompleta) { reflejarFinalizacionGrupo(); return true; }
+      if (estado) estado.textContent = 'No se confirmó el guardado. Puedes reintentar o salir al menú.';
       if (reintentar) { reintentar.hidden = false; reintentar.disabled = false; }
-      toast('No se pudo finalizar el Mundialito: ' + e.message, true);
       return false;
-    } finally {
-      finalizacionGrupoEnCurso = false;
-    }
+    } finally { finalizacionGrupoEnCurso = false; }
   };
 
   // Paso y subfase viajan juntos en la fila del anfitrión. Cada escritura parte
@@ -211,7 +207,8 @@ export function pantallaTorneo(root) {
   ) => {
     if (!esHost) return Promise.resolve(false);
     const tarea = async () => {
-      const yo = app.estado.players.find(pl => pl.id === miJugadorId());
+      if (!vigente() || finalizacionGrupoCompleta) return false;
+      const yo = (app.estado?.players || []).find(pl => pl.id === miJugadorId());
       if (!yo) return false;
       const actuales = yo.resultados || {};
       const repActual = actuales._reproduccion;
@@ -229,12 +226,22 @@ export function pantallaTorneo(root) {
       if (pasoActual === nuevoPaso && repCoincide) return true;
 
       const resultados = { ...actuales, _paso: nuevoPaso };
+      // Al abandonar un paso se confirman también las tandas resueltas por bots
+      // para ausentes. Reactivar al DT luego no vuelve a abrir ese resultado.
+      if (nuevoPaso > paso) {
+        for (const partido of (pasos[paso]?.partidos || [])) {
+          if (partido.penales?.auto && !partido.pendiente?.length) {
+            resultados[partido.clave] = { penales: { golesA: partido.penales.golesA, golesB: partido.penales.golesB } };
+          }
+        }
+      }
       if (nuevaSubfase !== null) {
         resultados._reproduccion = { paso: nuevoPaso, subfase: nuevaSubfase };
       }
       try {
         await net.actualizarJugador(room.code, miJugadorId(), { resultados });
-        const actualizado = app.estado.players.find(pl => pl.id === miJugadorId());
+        if (!vigente()) return false;
+        const actualizado = (app.estado?.players || []).find(pl => pl.id === miJugadorId());
         if (actualizado) {
           const trasRespuesta = actualizado.resultados || {};
           const pasoTrasRespuesta = Number(trasRespuesta._paso ?? -1);
@@ -257,7 +264,7 @@ export function pantallaTorneo(root) {
         }
         return true;
       } catch (e) {
-        if (avisarError) toast('No se pudo sincronizar la reproducción: ' + e.message, true);
+        if (vigente() && avisarError) toast('No se pudo sincronizar la reproducción: ' + e.message, true);
         return false;
       }
     };
@@ -270,12 +277,12 @@ export function pantallaTorneo(root) {
     if (nuevoPaso > paso) {
       paso = nuevoPaso;
       subfase = pasoEsEliminatorio(nuevoPaso)
-        ? (subfaseCompartida(app.estado.players, nuevoPaso) || 'regular')
+        ? (subfaseCompartida((app.estado?.players || []), nuevoPaso) || 'regular')
         : null;
       return true;
     }
     if (nuevoPaso !== paso || !pasoEsEliminatorio(paso)) return false;
-    const compartida = subfaseCompartida(app.estado.players, paso);
+    const compartida = subfaseCompartida((app.estado?.players || []), paso);
     const rangoCompartido = SUBFASES_REPRODUCCION[compartida] ?? -1;
     const rangoLocal = SUBFASES_REPRODUCCION[subfase] ?? -1;
     if (rangoCompartido <= rangoLocal) return false;
@@ -296,7 +303,8 @@ export function pantallaTorneo(root) {
   const actualizarAusente = (playerId, ausente) => {
     if (!esHost) return Promise.resolve(false);
     const tarea = async () => {
-      const host = app.estado.players.find(pl => pl.id === miJugadorId());
+      if (!vigente() || finalizacionGrupoCompleta) return false;
+      const host = (app.estado?.players || []).find(pl => pl.id === miJugadorId());
       if (!host) return false;
       const abandonadosActuales = new Set(host.resultados?._abandonados || []);
       if (ausente) abandonadosActuales.add(playerId);
@@ -307,7 +315,8 @@ export function pantallaTorneo(root) {
       };
       try {
         await net.actualizarJugador(room.code, miJugadorId(), { resultados });
-        const actualizado = app.estado.players.find(pl => pl.id === miJugadorId());
+        if (!vigente()) return false;
+        const actualizado = (app.estado?.players || []).find(pl => pl.id === miJugadorId());
         if (actualizado) {
           actualizado.resultados = {
             ...(actualizado.resultados || {}),
@@ -317,7 +326,7 @@ export function pantallaTorneo(root) {
         if (!publicandoTransicion && adoptarAvanceCompartido()) dibujar();
         return true;
       } catch (e) {
-        toast('No se pudo actualizar: ' + e.message, true);
+        if (vigente()) toast('No se pudo actualizar: ' + e.message, true);
         return false;
       }
     };
@@ -346,7 +355,7 @@ export function pantallaTorneo(root) {
     publicandoTransicion = true;
     const visto = Number(sessionStorage.getItem(kVisto) || -1);
     const compartida = pasoEsEliminatorio(nuevoPaso)
-      ? subfaseCompartida(app.estado.players, nuevoPaso)
+      ? subfaseCompartida((app.estado?.players || []), nuevoPaso)
       : null;
     const nuevaSubfase = pasoEsEliminatorio(nuevoPaso)
       ? (compartida || (nuevoPaso <= visto ? 'completo' : 'regular'))
@@ -372,13 +381,23 @@ export function pantallaTorneo(root) {
   // cambios que llegan por la sala: tandas nuevas re-simulan; el paso del
   // anfitrión mueve a los espectadores. La tanda abierta escucha sus propios eventos.
   salaHandler = () => {
+    if (!vigente()) return;
     if (app.estado?.room?.status === 'finished' || app.estado?.room?.finalized_at || app.estado?.room?.finalizedAt) {
       finalizacionGrupoCompleta = true;
       reflejarFinalizacionGrupo();
     }
+    if (esHost && !finalizacionGrupoCompleta) {
+      const marcados = new Set((app.estado.players.find(p => p.id === room.host_id)?.resultados?._abandonados) || []);
+      for (const player of app.estado.players) {
+        if (player.id !== room.host_id && !marcados.has(player.id) &&
+            ahoraServidor() - Date.parse(player.last_seen) >= CICLO_VIDA.absenceMs) {
+          void actualizarAusente(player.id, true);
+        }
+      }
+    }
     if (document.querySelector('.overlay-tanda')) return;
-    const nuevas = soloTandas(Object.assign({}, ...app.estado.players.map(p => p.resultados || {})));
-    const nuevosAband = (app.estado.players.find(p => p.id === room.host_id)?.resultados?._abandonados) || [];
+    const nuevas = soloTandas(Object.assign({}, ...(app.estado?.players || []).map(p => p.resultados || {})));
+    const nuevosAband = ((app.estado?.players || []).find(p => p.id === room.host_id)?.resultados?._abandonados) || [];
     if (JSON.stringify(nuevas) !== JSON.stringify(overrides) ||
         JSON.stringify(nuevosAband) !== JSON.stringify(abandonados)) { pantallaTorneo(root); return; }
     const nuevoPaso = hostPaso();
@@ -394,7 +413,7 @@ export function pantallaTorneo(root) {
       if (podioLocal && nuevoPaso < pasos.length - 1) return;
       const pasoCambio = nuevoPaso !== paso;
       const nuevaCompartida = pasoEsEliminatorio(nuevoPaso)
-        ? subfaseCompartida(app.estado.players, nuevoPaso)
+        ? subfaseCompartida((app.estado?.players || []), nuevoPaso)
         : null;
       const nuevaSubfase = pasoEsEliminatorio(nuevoPaso)
         ? (nuevaCompartida || (pasoCambio ? 'regular' : subfase))
@@ -415,13 +434,17 @@ export function pantallaTorneo(root) {
   };
   document.addEventListener('sala:cambio', salaHandler);
   app.limpiezaPantalla = () => {
+    montada = false;
     clearInterval(relojTimer);
     cerrarResumenRonda();
+    cerrarTandaActual?.();
+    cerrarEliminacionActual?.();
     document.querySelector('.overlay-gestion')?.remove();
     if (salaHandler) { document.removeEventListener('sala:cambio', salaHandler); salaHandler = null; }
   };
 
   const dibujar = () => {
+    if (!vigente()) return;
     clearInterval(relojTimer);
     cerrarResumenRonda();
     document.querySelector('.overlay-gestion')?.remove();
@@ -488,12 +511,13 @@ export function pantallaTorneo(root) {
 
     $('#btn-jugadores', root)?.addEventListener('click', () =>
       abrirGestionJugadores(room, actualizarAusente));
-    if (paso === pasos.length - 1 && app.grupo?.group) {
+    if (paso === pasos.length - 1) {
       const volver = $('#btn-volver-grupo', root);
       if (volver) {
-        volver.disabled = !finalizacionGrupoCompleta;
+        volver.disabled = false;
         volver.addEventListener('click', () => salirDeSala({ notificar: false }));
       }
+      $('#btn-otra-rapida', root)?.addEventListener('click', nuevaPartidaRapida);
       $('#btn-reintentar-finalizacion', root)?.addEventListener('click', finalizarTorneoDeGrupo);
       if (finalizacionGrupoCompleta) reflejarFinalizacionGrupo();
       else if (esHost) finalizarTorneoDeGrupo();
@@ -639,7 +663,7 @@ function abrirGestionJugadores(room, actualizarAusente) {
   };
 
   function pintar() {
-    const host = app.estado.players.find(p => p.id === room.host_id);
+    const host = (app.estado?.players || []).find(p => p.id === room.host_id);
     const aband = new Set(host?.resultados?._abandonados || []);
     div.innerHTML = html`
       <div class="cartel-gestion">
@@ -648,7 +672,7 @@ function abrirGestionJugadores(room, actualizarAusente) {
           penales que no se juegan), márcalo como ausente: el Bot juega sus penales y el
           torneo sigue. Su equipo se queda en el cuadro.</p>
         <ul class="lista-gestion">
-          ${app.estado.players.map(p => html`
+          ${(app.estado?.players || []).map(p => html`
             <li class="${aband.has(p.id) ? 'ausente' : ''}">
               <b>${esc(p.name)}</b>
               ${p.id === room.host_id
@@ -742,7 +766,7 @@ function podioFinalHTML(mundial) {
 // marcador en vivo de una tanda en curso: lo publica el/los DT que la juegan
 // en su fila (clave '_live_<clave>'), y el resto de la sala lo ve actualizarse
 function textoLivePenales(mundial, partido) {
-  const todos = Object.assign({}, ...app.estado.players.map(p => p.resultados || {}));
+  const todos = Object.assign({}, ...(app.estado?.players || []).map(p => p.resultados || {}));
   const live = todos['_live_' + partido.clave];
   if (!live) return '';
   return `${nombrePlano(mundial, partido.idA)} ${live.a} – ${live.b} ${nombrePlano(mundial, partido.idB)}`;
@@ -1460,11 +1484,11 @@ function abrirTanda(root, mundial, partido, room) {
   document.body.appendChild(div);
 
   // en duelo: mis lados ya elegidos (sobreviven a un refresco) y los del rival
-  let misLados = [...((app.estado.players.find(pl => pl.id === miJugadorId())?.resultados || {})[kT] || [])];
+  let misLados = [...(((app.estado?.players || []).find(pl => pl.id === miJugadorId())?.resultados || {})[kT] || [])];
   const susLados = () => duelo
-    ? ((app.estado.players.find(pl => pl.id === rivalPid)?.resultados || {})[kT] || [])
+    ? (((app.estado?.players || []).find(pl => pl.id === rivalPid)?.resultados || {})[kT] || [])
     : [];
-  const resultadoGuardado = () => Object.assign({}, ...app.estado.players.map(p => p.resultados || {}))[partido.clave];
+  const resultadoGuardado = () => Object.assign({}, ...(app.estado?.players || []).map(p => p.resultados || {}))[partido.clave];
 
   let accion = null;     // callback al elegir lado
   let animando = false;  // no procesar doble durante una animación
@@ -1472,6 +1496,8 @@ function abrirTanda(root, mundial, partido, room) {
   let publicandoArquero = false;
   let decisionesArqueroListas = false;
   let cerrado = false;
+  const identidadTanda = capturarNavegacion();
+  const tandaVigente = () => !cerrado && identidadTanda() && div.isConnected;
   let guardando = false;
   let avanceTimer = null;
   let avanceEnCurso = false;
@@ -1484,10 +1510,10 @@ function abrirTanda(root, mundial, partido, room) {
   // si el anfitrión marcó ausente a alguno de los dos, la máquina toma la tanda:
   // cierro este duelo y dejo que el Mundial siga con el resultado automático
   const hayAusenteEnDuelo = () => {
-    const aband = (app.estado.players.find(p => p.id === room.host_id)?.resultados?._abandonados) || [];
+    const aband = ((app.estado?.players || []).find(p => p.id === room.host_id)?.resultados?._abandonados) || [];
     return [partido.idA, partido.idB].some(id => aband.includes(id.slice(2)));
   };
-  const resultadosDe = playerId => app.estado.players.find(p => p.id === playerId)?.resultados || {};
+  const resultadosDe = playerId => (app.estado?.players || []).find(p => p.id === playerId)?.resultados || {};
   const requiereDecisionArquero = meta => Boolean(meta.playerId && meta.reserva);
   const idArqueroDecidido = meta => {
     if (!requiereDecisionArquero(meta)) return meta.actual.id;
@@ -1508,22 +1534,26 @@ function abrirTanda(root, mundial, partido, room) {
     if (cerrado) return;
     if (resultadoGuardado() || hayAusenteEnDuelo()) {
       cerrar();
-      pantallaTorneo(root);
+      if (identidadTanda()) pantallaTorneo(root);
       return;
     }
     if (!animando && !publicandoEleccion && !publicandoArquero) prepararTanda();
   };
   if (duelo) document.addEventListener('sala:cambio', tandaHandler);
   const cerrar = () => {
+    document.removeEventListener('mundialito:salir', cerrar);
     cerrado = true;
     cancelarAvancePendiente();
     if (duelo) document.removeEventListener('sala:cambio', tandaHandler);
     div.remove();
+    if (cerrarTandaActual === cerrar) cerrarTandaActual = null;
   };
+  cerrarTandaActual = cerrar;
 
   // publica el marcador parcial para que toda la sala lo vea en vivo
   const publicarLive = () => {
-    const yo = app.estado.players.find(pl => pl.id === miJugadorId());
+    if (!tandaVigente()) return;
+    const yo = (app.estado?.players || []).find(pl => pl.id === miJugadorId());
     if (!yo) return;
     yo.resultados = { ...(yo.resultados || {}), ['_live_' + partido.clave]: { a: goles(t.A), b: goles(t.B) } };
     net.actualizarJugador(room.code, miJugadorId(), { resultados: yo.resultados }).catch(() => {});
@@ -1573,9 +1603,10 @@ function abrirTanda(root, mundial, partido, room) {
   }
 
   async function publicarDecisionArquero(id) {
+    if (!tandaVigente()) return;
     const miMeta = soyA ? metaA : metaB;
     if (!requiereDecisionArquero(miMeta) || (id !== miMeta.actual.id && id !== miMeta.reserva.id)) return;
-    const yo = app.estado.players.find(pl => pl.id === miJugadorId());
+    const yo = (app.estado?.players || []).find(pl => pl.id === miJugadorId());
     if (!yo || publicandoArquero) return;
     const resultadosPrevios = yo.resultados || {};
     yo.resultados = { ...resultadosPrevios, [kArquero]: { goalkeeperId: id } };
@@ -1584,16 +1615,17 @@ function abrirTanda(root, mundial, partido, room) {
     try {
       await net.actualizarJugador(room.code, miJugadorId(), { resultados: yo.resultados });
     } catch (e) {
+      if (!tandaVigente()) return;
       yo.resultados = resultadosPrevios;
       toast('No se pudo enviar tu decisión de arquero: ' + e.message, true);
     } finally {
       publicandoArquero = false;
     }
-    prepararTanda();
+    if (tandaVigente()) prepararTanda();
   }
 
   function prepararTanda() {
-    if (cerrado || animando || publicandoEleccion || publicandoArquero) return;
+    if (!tandaVigente() || animando || publicandoEleccion || publicandoArquero) return;
     if (resultadoGuardado() || hayAusenteEnDuelo()) return;
     if (!decisionesArqueroCompletas()) {
       decisionesArqueroListas = false;
@@ -1762,8 +1794,9 @@ function abrirTanda(root, mundial, partido, room) {
       return;
     }
     accion = async zona => {
+      if (!tandaVigente()) return;
       const ladosPrevios = misLados.slice();
-      const yo = app.estado.players.find(pl => pl.id === miJugadorId());
+      const yo = (app.estado?.players || []).find(pl => pl.id === miJugadorId());
       const resultadosPrevios = yo.resultados || {};
       misLados = [...misLados, zona];
       yo.resultados = { ...resultadosPrevios, [kT]: misLados };
@@ -1771,6 +1804,7 @@ function abrirTanda(root, mundial, partido, room) {
       try {
         await net.actualizarJugador(room.code, miJugadorId(), { resultados: yo.resultados });
       } catch (e) {
+        if (!tandaVigente()) return;
         // Si la publicación falla, la elección no existe para el rival: se
         // revierte también localmente y se vuelve a habilitar el mismo turno.
         misLados = ladosPrevios;
@@ -1793,10 +1827,12 @@ function abrirTanda(root, mundial, partido, room) {
   }
 
   async function guardar() {
+    if (!tandaVigente()) return;
     if (guardando) return;
     guardando = true;
     // ambos DTs escriben el mismo resultado: da igual quién llegue primero
-    const yo = app.estado.players.find(pl => pl.id === miJugadorId());
+    const yo = (app.estado?.players || []).find(pl => pl.id === miJugadorId());
+    if (!yo) { guardando = false; return; }
     const { ['_live_' + partido.clave]: _liveFin, ...resto } = (yo.resultados || {});
     const resultados = {
       ...resto,
@@ -1805,14 +1841,17 @@ function abrirTanda(root, mundial, partido, room) {
     yo.resultados = resultados; // actualización optimista para recalcular al tiro
     try {
       await net.actualizarJugador(room.code, miJugadorId(), { resultados });
+      if (!tandaVigente()) return;
       cerrar();
       pantallaTorneo(root);
     } catch (e) {
+      if (!tandaVigente()) return;
       guardando = false;
       toast('No se pudo guardar la tanda: ' + e.message, true);
     }
   }
 
+  document.addEventListener('mundialito:salir', cerrar);
   prepararTanda();
 }
 
@@ -1861,10 +1900,20 @@ function mostrarEliminado(root, mundial, marcar, alSeguir, { esSubcampeon = fals
   const appEraInerte = appRoot?.hasAttribute('inert') ?? false;
   const cerrar = () => {
     document.removeEventListener('keydown', manejarTeclado);
+    document.removeEventListener('mundialito:salir', abandonar);
     div.remove();
+    if (cerrarEliminacionActual === abandonar) cerrarEliminacionActual = null;
     if (appRoot && !appEraInerte) appRoot.inert = false;
     alSeguir?.();
   };
+  const abandonar = () => {
+    document.removeEventListener('keydown', manejarTeclado);
+    document.removeEventListener('mundialito:salir', abandonar);
+    div.remove();
+    if (cerrarEliminacionActual === abandonar) cerrarEliminacionActual = null;
+    if (appRoot && !appEraInerte) appRoot.inert = false;
+  };
+  cerrarEliminacionActual = abandonar;
   const manejarTeclado = e => {
     if (e.key === 'Escape') {
       e.preventDefault();
@@ -1878,6 +1927,7 @@ function mostrarEliminado(root, mundial, marcar, alSeguir, { esSubcampeon = fals
   document.body.appendChild(div);
   document.addEventListener('keydown', manejarTeclado);
   $('#elim-mirar', div).addEventListener('click', cerrar);
+  document.addEventListener('mundialito:salir', abandonar);
   $('#elim-mirar', div).focus();
 }
 
@@ -1976,16 +2026,16 @@ function construirPasos(mundial) {
           ${campeon.esIA
             ? '<p class="campeon-dt">El Bot se quedó con el Mundialito. 😅</p>'
             : `<p class="campeon-dt">${esMioCampeon ? '¡ERES EL CAMPEÓN, DT! 👑' : `DT campeón: <b>${esc(campeon.nombre)}</b> 👑`}</p>`}
-          ${app.grupo?.group ? html`
-            <div class="finalizacion-grupo">
+          <div class="finalizacion-grupo">
               <p id="estado-finalizacion-grupo" class="nota" role="status">${app.estado?.room?.status === 'finished'
-                ? 'Podio guardado en el historial del grupo.'
-                : 'Guardando el podio en el historial del grupo…'}</p>
+                ? 'Podio confirmado.'
+                : 'Podio pendiente de confirmación…'}</p>
               <button type="button" id="btn-reintentar-finalizacion" class="btn btn-mini" hidden>Reintentar guardado</button>
-              <button type="button" id="btn-volver-grupo" class="btn btn-primario" ${app.estado?.room?.status === 'finished' ? '' : 'disabled'}>
-                Volver al grupo
+              <button type="button" id="btn-volver-grupo" class="btn btn-primario">
+                Volver al menú
               </button>
-            </div>` : ''}
+              ${!app.grupo ? '<button type="button" id="btn-otra-rapida" class="btn">Crear otra partida rápida</button>' : ''}
+            </div>
         </div>
         ${m.goleadores.length ? html`
         <h3 class="titulo-fase chico">Goleadores del torneo</h3>

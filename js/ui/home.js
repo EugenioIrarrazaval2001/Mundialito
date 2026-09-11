@@ -2,7 +2,7 @@
 
 import { net, ONLINE } from '../net/net.js';
 import { render, html, esc, $, toast } from './dom.js';
-import { entrarASala } from '../main.js';
+import { pantallaInicio } from './grupo.js';
 import {
   SQUADS_HISTORICAS_AMPLIADAS, RESULTADO_MUNDIAL, bandera, squadsParaModo,
 } from '../data/squads.js';
@@ -236,6 +236,7 @@ function abrirSeleccionesMundiales(disparador, {
   };
 
   const cerrar = () => {
+    document.removeEventListener('mundialito:salir', cerrar);
     document.removeEventListener('keydown', gestionarTeclado);
     overlay.remove();
     if (appRoot && !appEraInerte) appRoot.inert = false;
@@ -355,6 +356,7 @@ function abrirSeleccionesMundiales(disparador, {
   });
   if (appRoot) appRoot.inert = true;
   document.addEventListener('keydown', gestionarTeclado);
+  document.addEventListener('mundialito:salir', cerrar);
   document.body.appendChild(overlay);
   actualizarEstadoVisual();
   overlay.querySelector('.btn-volver-selecciones').focus();
@@ -369,126 +371,5 @@ export function abrirUniversoDraft(disparador, { modo = 'almanaque', alCambiar =
   });
 }
 
-export function pantallaHome(root) {
-  const nombreGuardado = localStorage.getItem('mundialito-nombre') || '';
-
-  render(root, html`
-    <div class="home">
-      <header class="home-cabecera">
-        <div class="estrellas">★ ★ ★</div>
-        <h1 class="titulo">MUNDIALITO</h1>
-        <p class="subtitulo">EL TORNEO DE SELECCIONES HISTÓRICAS</p>
-        ${ONLINE ? '' : html`
-          <p class="aviso-local">⚠ Modo local de prueba (sin Supabase configurado):
-          puedes jugar solo contra el Bot. Para jugar online con otros jugadores, sigue el README.</p>`}
-      </header>
-
-      <div class="home-tarjetas">
-        <section class="tarjeta">
-          <h2>Tu nombre</h2>
-          <input id="nombre" maxlength="18" placeholder="ej: Matías" value="${esc(nombreGuardado)}" />
-        </section>
-
-        <section class="tarjeta">
-          <h2>Crear una sala</h2>
-          <p class="nota">Tú serás el anfitrión: repartes los planteles y das el pitazo inicial.</p>
-          <p class="nota">Mundialito usa selecciones históricas, con niveles ocultos y pura memoria futbolera.</p>
-          <button type="button" id="btn-selecciones-mundiales" class="btn">
-            Configurar universo del draft
-          </button>
-          <button id="btn-crear" class="btn btn-primario">Crear sala</button>
-        </section>
-
-        <section class="tarjeta ${ONLINE ? '' : 'deshabilitada'}">
-          <h2>Unirse a una sala</h2>
-          <p class="nota">Pide el código de 5 letras al anfitrión.</p>
-          <input id="codigo" maxlength="5" placeholder="CÓDIGO" class="input-codigo"
-            ${ONLINE ? '' : 'disabled'} />
-          <button id="btn-unirse" class="btn" ${ONLINE ? '' : 'disabled'}>Unirse</button>
-        </section>
-      </div>
-
-      <footer class="home-pie">155 planteles históricos + 16 octavofinalistas de 2026</footer>
-    </div>
-  `);
-
-  const modoSeleccionado = () => 'almanaque';
-  let solicitudEnCurso = false;
-  // enabled_squads limita solo la ruleta del draft. Los rivales del torneo se
-  // reconstruyen siempre desde el universo base completo del modo.
-  const poolDraftConfigurado = () =>
-    squadsParaModo(modoSeleccionado(), keysActivasOrdenadas());
-  const configuracionValida = () => poolDraftConfigurado().length > 0;
-  const resumenDraft = () => ({
-    activos: poolDraftConfigurado().length,
-    total: squadsParaModo(modoSeleccionado()).length,
-  });
-  const actualizarDisponibilidadCrear = () => {
-    const valida = configuracionValida();
-    $('#btn-crear', root).disabled = solicitudEnCurso || !valida;
-    const btnUnirse = $('#btn-unirse', root);
-    if (btnUnirse) btnUnirse.disabled = solicitudEnCurso || !ONLINE;
-    return valida;
-  };
-
-  const leerNombre = () => {
-    const n = $('#nombre', root).value.trim();
-    if (!n) { toast('Primero pon tu nombre', true); return null; }
-    localStorage.setItem('mundialito-nombre', n);
-    return n;
-  };
-
-  $('#btn-crear', root).addEventListener('click', async () => {
-    if (solicitudEnCurso) return;
-    if (!actualizarDisponibilidadCrear()) return;
-    const nombre = leerNombre();
-    if (!nombre) return;
-    const modo = modoSeleccionado();
-    const enabledSquads = keysActivasOrdenadas();
-    solicitudEnCurso = true;
-    actualizarDisponibilidadCrear();
-    try {
-      const code = await net.crearSala(nombre, `${modo}|32`, enabledSquads);
-      entrarASala(code);
-    } catch (e) {
-      solicitudEnCurso = false;
-      actualizarDisponibilidadCrear();
-      toast('No se pudo crear la sala: ' + e.message, true);
-    }
-  });
-
-  $('#btn-selecciones-mundiales', root).addEventListener('click', e => {
-    abrirSeleccionesMundiales(e.currentTarget, {
-      alCambiar: actualizarDisponibilidadCrear,
-      configuracionValida,
-      resumenDraft,
-    });
-  });
-
-  root.querySelectorAll('input[name=modo]').forEach(input =>
-    input.addEventListener('change', actualizarDisponibilidadCrear));
-
-  $('#btn-unirse', root).addEventListener('click', async () => {
-    if (solicitudEnCurso) return;
-    const nombre = leerNombre();
-    if (!nombre) return;
-    const code = $('#codigo', root).value.trim().toUpperCase();
-    if (code.length !== 5) { toast('El código tiene 5 letras', true); return; }
-    solicitudEnCurso = true;
-    actualizarDisponibilidadCrear();
-    try {
-      await net.unirse(code, nombre);
-      entrarASala(code);
-    } catch (e) {
-      solicitudEnCurso = false;
-      actualizarDisponibilidadCrear();
-      toast(e.message, true);
-    }
-  });
-
-  $('#codigo', root)?.addEventListener('keydown', e => {
-    if (e.key === 'Enter') $('#btn-unirse', root).click();
-  });
-
-  actualizarDisponibilidadCrear();
-}
+// Entrada legacy redirigida al acceso vigente, con la misma configuración del draft.
+export function pantallaHome(root) { pantallaInicio(root, 'rapida'); }

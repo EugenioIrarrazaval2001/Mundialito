@@ -1,11 +1,11 @@
 // Dashboard e identidad persistente de un grupo de Mundialito.
 
 import {
-  net, ONLINE, limpiarNombreGrupo, validarClaveGrupo,
+  net, ONLINE, limpiarNombreGrupo, validarClaveGrupo, validarNombreJugador,
 } from '../net/net.js';
 import { render, html, esc, $, toast } from './dom.js';
 import {
-  app, entrarAGrupo, abrirVestuarioGrupo, salirDeGrupo, entrarASala, refrescarGrupo,
+  app, entrarAGrupo, abrirVestuarioGrupo, salirDeGrupo, entrarASala, refrescarGrupo, reanudarGuardada,
 } from '../main.js';
 import {
   abrirUniversoDraft, keysDraftActivas, configuracionDraftValida, resumenUniversoDraft,
@@ -364,6 +364,55 @@ function conectarLanding(root) {
 
 const inicio = { paso: 'portada', grupo: null, dashboard: null };
 
+function pantallaRapida(root, paso) {
+  const formulario = paso !== 'rapida';
+  const crear = paso === 'rapida-crear';
+  render(root, html`<main class="inicio inicio-formulario">
+    ${botonVolver(formulario ? 'rapida' : 'opciones')}
+    <section class="inicio-panel"><h1>PARTIDA RÁPIDA</h1>
+    ${!ONLINE ? '<p class="aviso-local">MODO LOCAL · Un jugador contra bots. Para jugar con amigos configura Supabase.</p>' : ''}
+    ${formulario ? html`<h2>${crear ? 'CREAR PARTIDA RÁPIDA' : 'UNIRSE A PARTIDA RÁPIDA'}</h2>
+      <form id="form-rapida" novalidate>
+        <div class="campo"><label for="rapida-nombre">Tu nombre</label><input id="rapida-nombre" maxlength="30" autocomplete="name" required /></div>
+        ${!crear ? '<div class="campo"><label for="rapida-codigo">Código de cinco letras</label><input id="rapida-codigo" maxlength="12" autocapitalize="characters" autocomplete="off" spellcheck="false" required /></div>' : ''}
+        <p id="rapida-error" class="inicio-error" role="alert" hidden></p>
+        <button class="btn inicio-confirmar" type="submit">${crear ? 'CREAR PARTIDA RÁPIDA' : 'UNIRSE A PARTIDA RÁPIDA'}</button>
+      </form>` : html`<div class="inicio-acciones">
+        <button class="btn inicio-accion" data-rapida-crear>CREAR PARTIDA RÁPIDA</button>
+        <button class="btn inicio-accion" data-rapida-unir>UNIRSE A PARTIDA RÁPIDA</button>
+        <button class="btn" data-reanudar>Reanudar mi última partida</button>
+      </div><p class="nota">Acceso directo al mismo Mundialito: vestuario, draft, torneo y podio. La duración y las reglas son las mismas.</p>`}
+    </section></main>`);
+  $('[data-inicio-volver]',root).onclick = e => pantallaInicio(root,e.currentTarget.dataset.inicioVolver);
+  $('[data-rapida-crear]',root)?.addEventListener('click',()=>pantallaInicio(root,'rapida-crear'));
+  $('[data-rapida-unir]',root)?.addEventListener('click',()=>pantallaInicio(root,'rapida-unir'));
+  $('[data-reanudar]',root)?.addEventListener('click',async()=>{if(!await reanudarGuardada())toast('No hay una participación guardada en este navegador.',true);});
+  const form=$('#form-rapida',root);
+  if(!form)return;
+  // Cada formulario nuevo representa una partida nueva. El mismo envío/reintento
+  // conserva su operationId aun si el servidor confirmó y se perdió la respuesta.
+  const pendingKey='mundialito-crear-rapida-pendiente';
+  let operationId=sessionStorage.getItem(pendingKey)||crypto.randomUUID();
+  let busy=false;
+  form.addEventListener('submit',async event=>{
+    event.preventDefault();if(busy)return;
+    const error=$('#rapida-error',form);error.hidden=true;
+    try {
+      const nombre=validarNombreJugador($('#rapida-nombre',form).value);
+      busy=true;bloquearFormulario(form,true,crear?'Creando…':'Entrando…');
+      if(crear)sessionStorage.setItem(pendingKey,operationId);
+      const ingreso=crear?await net.rapidaCrear({nombre,operationId}):await net.rapidaUnirse({nombre,code:$('#rapida-codigo',form).value});
+      if(crear)sessionStorage.removeItem(pendingKey);
+      if(!form.isConnected)return;
+      entrarASala(ingreso.code,ingreso);
+    } catch(e) {
+      if(!form.isConnected)return;
+      error.textContent=e.message;error.hidden=false;busy=false;bloquearFormulario(form,false);
+      if(['EXPIRED','FINISHED','CANCELLED'].includes(e.code)) { sessionStorage.removeItem(pendingKey);operationId=crypto.randomUUID(); }
+    }
+  });
+}
+
 function botonVolver(destino) {
   return html`<button type="button" class="inicio-volver" data-inicio-volver="${destino}">← Volver</button>`;
 }
@@ -385,6 +434,7 @@ function htmlInicioOpciones() {
       <div class="inicio-acciones">
         <button type="button" class="btn inicio-accion" data-inicio-crear>CREAR GRUPO NUEVO</button>
         <button type="button" class="btn inicio-accion" data-inicio-unir>UNIRSE A GRUPO EXISTENTE</button>
+        <button type="button" class="btn inicio-accion" data-inicio-rapida>PARTIDA RÁPIDA</button>
         <button type="button" class="btn inicio-accion" data-inicio-matematicas>VER LAS MATEMÁTICAS DEL JUEGO</button>
       </div>
     </main>`;
@@ -471,6 +521,7 @@ function abrirMatematicasJuego(disparador) {
     </section>`;
   const cerrar = () => {
     document.removeEventListener('keydown', alTeclado);
+    document.removeEventListener('mundialito:salir', cerrar);
     if (raiz) raiz.inert = false;
     overlay.remove();
     disparador?.focus?.();
@@ -479,6 +530,7 @@ function abrirMatematicasJuego(disparador) {
   overlay.querySelector('.btn-volver-matematicas').addEventListener('click', cerrar);
   overlay.addEventListener('click', evento => { if (evento.target === overlay) cerrar(); });
   document.addEventListener('keydown', alTeclado);
+  document.addEventListener('mundialito:salir', cerrar);
   if (raiz) raiz.inert = true;
   document.body.appendChild(overlay);
   overlay.querySelector('.btn-volver-matematicas').focus();
@@ -537,35 +589,31 @@ function conectarInicioCrear(root) {
   const pinInput = $('#inicio-pin', root);
   const confirmarInput = $('#inicio-pin-confirmar', root);
   const errorCampo = $('#inicio-error-crear', root);
+  let busy = false;
   form.addEventListener('submit', async evento => {
     evento.preventDefault();
+    if (busy) return;
     const validacion = validarClaveGrupo(grupoInput.value);
     const nombre = nombreInput.value.trim().replace(/\s+/g, ' ');
     const pin = pinInput.value.trim();
     const confirmar = confirmarInput.value.trim();
     if (!validacion.valida) return mostrarErrorInicio(errorCampo, grupoInput, validacion.error || 'Escribe un nombre de grupo válido.');
-    if (nombre.length < 2) return mostrarErrorInicio(errorCampo, nombreInput, 'Escribe un nombre de al menos 2 caracteres.');
+    try { validarNombreJugador(nombre); } catch (e) { return mostrarErrorInicio(errorCampo, nombreInput, e.message); }
     if (!PIN_VALIDO.test(pin)) return mostrarErrorInicio(errorCampo, pinInput, 'El PIN debe tener entre 4 y 6 dígitos.');
     if (pin !== confirmar) return mostrarErrorInicio(errorCampo, confirmarInput, 'Los dos PIN no coinciden.');
     mostrarErrorInicio(errorCampo, grupoInput, '');
     bloquearFormulario(form, true, 'Creando…');
+    busy = true;
     try {
       const display = limpiarNombreGrupo(validacion.display);
-      const existente = primerObjeto(await net.grupoBuscar(display));
-      if (existente) {
-        mostrarErrorInicio(errorCampo, grupoInput, 'Ya existe un grupo con ese nombre. Puedes unirte a él desde "Unirse a grupo existente".');
-        bloquearFormulario(form, false);
-        return;
-      }
-      const creado = primerObjeto(await net.grupoCrear(display));
-      if (!creado) throw new Error('El servidor no devolvió el grupo creado.');
-      const respuesta = await net.grupoCrearMiembro({ groupId: idGrupo(creado), nombre, pin });
+      const respuesta = await net.grupoCrearCompleto({ clave: display, nombre, pin });
+      if (!form.isConnected) return;
       pinInput.value = '';
       confirmarInput.value = '';
-      await completarIdentidad(creado, respuesta);
+      await completarIdentidad(respuesta.group, respuesta);
     } catch (error) {
-      pinInput.value = '';
-      confirmarInput.value = '';
+      if (!form.isConnected) return;
+      busy = false;
       bloquearFormulario(form, false);
       mostrarErrorInicio(errorCampo, grupoInput, error?.message || 'No se pudo crear el grupo.');
     }
@@ -578,6 +626,7 @@ function conectarInicioUnir(root) {
   const errorCampo = $('#inicio-error-unir', root);
   form.addEventListener('submit', async evento => {
     evento.preventDefault();
+    if (form.getAttribute('aria-busy') === 'true') return;
     const validacion = validarClaveGrupo(input.value);
     if (!validacion.valida) return mostrarErrorInicio(errorCampo, input, validacion.error || 'Escribe un nombre de grupo válido.');
     input.value = validacion.display;
@@ -585,17 +634,20 @@ function conectarInicioUnir(root) {
     bloquearFormulario(form, true, 'Buscando…');
     try {
       const grupo = primerObjeto(await net.grupoBuscar(validacion.display));
+      if (!form.isConnected) return;
       if (!grupo) {
         bloquearFormulario(form, false);
         mostrarErrorInicio(errorCampo, input, 'No encontramos un grupo con ese nombre.');
         return;
       }
       const dashboard = await net.grupoDashboard(idGrupo(grupo));
+      if (!form.isConnected) return;
       inicio.paso = 'identidad';
       inicio.grupo = dashboard?.group || grupo;
       inicio.dashboard = dashboard || {};
       pantallaInicio(root);
     } catch (error) {
+      if (!form.isConnected) return;
       bloquearFormulario(form, false);
       mostrarErrorInicio(errorCampo, input, error?.message || 'No se pudo buscar el grupo.');
     }
@@ -603,12 +655,15 @@ function conectarInicioUnir(root) {
 }
 
 /** Portada obligatoria y flujo manual para entrar a un grupo. */
-export function pantallaInicio(root) {
+export function pantallaInicio(root, destino = null) {
+  if (destino) { inicio.paso = destino; inicio.grupo = null; inicio.dashboard = null; }
+  app.generacion++;
   const paso = inicio.paso;
   if (paso === 'portada') render(root, htmlInicioPortada());
   else if (paso === 'opciones') render(root, htmlInicioOpciones());
   else if (paso === 'crear') render(root, htmlInicioCrear());
   else if (paso === 'unir') render(root, htmlInicioUnir());
+  else if (paso.startsWith('rapida')) { pantallaRapida(root, paso); return; }
   else if (paso === 'identidad' && inicio.grupo) render(root,
     htmlGateMiembro(inicio.grupo, inicio.dashboard, { onboarding: true }));
   else { inicio.paso = 'portada'; return pantallaInicio(root); }
@@ -622,6 +677,7 @@ export function pantallaInicio(root) {
   $('[data-inicio-unir]', root)?.addEventListener('click', () => {
     inicio.paso = 'unir'; pantallaInicio(root);
   });
+  $('[data-inicio-rapida]', root)?.addEventListener('click', () => pantallaInicio(root, 'rapida'));
   $('[data-inicio-matematicas]', root)?.addEventListener('click', evento => {
     abrirMatematicasJuego(evento.currentTarget);
   });
@@ -935,6 +991,7 @@ function htmlVestuarioNoDisponible(grupo, error) {
         <p class="grupo-sobretitulo">MUNDIALITO EN CURSO</p>
         <h2>No puedes entrar a este Mundialito</h2>
         <p class="grupo-intro">${esc(error || 'El torneo ya comenzó y solo pueden retomarlo quienes ya participaban.')}</p>
+        <button type="button" class="btn btn-reintentar-vestuario">Reintentar acceso</button>
         <button type="button" class="btn btn-mini btn-ranking-historico">RANKING HISTÓRICO</button>
       </section>
     </main>`;
@@ -998,7 +1055,7 @@ function bloquearFormulario(form, bloqueado, textoBloqueado) {
 
 async function completarIdentidad(grupo, respuesta) {
   const sesion = extraerSesion(respuesta);
-  await Promise.resolve(entrarAGrupo(grupo, sesion));
+  return entrarAGrupo(grupo, sesion);
 }
 
 function conectarGate(root, grupo, { onVolver = null } = {}) {
@@ -1025,10 +1082,11 @@ function conectarGate(root, grupo, { onVolver = null } = {}) {
       const respuesta = await net.grupoReclamarMiembro({
         groupId: idGrupo(grupo), memberId, pin,
       });
+      if (!formExistente.isConnected) return;
       pinInput.value = '';
       await completarIdentidad(grupo, respuesta);
-      toast('¡Bienvenido de vuelta!');
     } catch (error) {
+      if (!formExistente.isConnected) return;
       pinInput.value = '';
       operacionEnCurso = false;
       bloquearFormulario(formExistente, false);
@@ -1047,7 +1105,7 @@ function conectarGate(root, grupo, { onVolver = null } = {}) {
     const nombre = nombreInput.value.trim().replace(/\s+/g, ' ');
     const pin = pinInput.value.trim();
     const confirmar = confirmarInput.value.trim();
-    if (nombre.length < 2) { toast('Escribe un nombre de al menos 2 caracteres.', true); return; }
+    try { validarNombreJugador(nombre); } catch (e) { toast(e.message, true); return; }
     if (!PIN_VALIDO.test(pin)) { toast('El PIN debe tener entre 4 y 6 dígitos.', true); return; }
     if (pin !== confirmar) { toast('Los dos PIN no coinciden.', true); return; }
 
@@ -1057,11 +1115,12 @@ function conectarGate(root, grupo, { onVolver = null } = {}) {
       const respuesta = await net.grupoCrearMiembro({
         groupId: idGrupo(grupo), nombre, pin,
       });
+      if (!formNuevo.isConnected) return;
       pinInput.value = '';
       confirmarInput.value = '';
       await completarIdentidad(grupo, respuesta);
-      toast('¡Tu miembro quedó creado!');
     } catch (error) {
+      if (!formNuevo.isConnected) return;
       pinInput.value = '';
       confirmarInput.value = '';
       operacionEnCurso = false;
@@ -1227,12 +1286,8 @@ export function pantallaGrupo(root) {
     render(root, htmlVestuarioNoDisponible(grupo, app.grupo.vestuarioError));
     conectarSalida(root);
     $('.btn-ranking-historico', root)?.addEventListener('click', evento => abrirRankingHistorico(evento.currentTarget));
+    $('.btn-reintentar-vestuario', root)?.addEventListener('click', abrirVestuarioGrupo);
     return;
   }
-  render(root, html`
-    <main class="grupo grupo-cargando-vestuario"><p class="nota">Abriendo vestuario…</p></main>`);
-  Promise.resolve(abrirVestuarioGrupo()).catch(error => {
-    app.grupo = { ...app.grupo, vestuarioError: error?.message || 'No se pudo abrir el vestuario.' };
-    pantallaGrupo(root);
-  });
+  void abrirVestuarioGrupo();
 }

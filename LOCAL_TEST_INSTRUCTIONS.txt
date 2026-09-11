@@ -1,0 +1,37 @@
+MUNDIALITO — INSTRUCCIONES PARA PROBAR EN MODO LOCAL
+
+1. Abre PowerShell en esta carpeta: Proyecto_Mundial.
+
+2. Escribe este comando y presiona Enter:
+
+   python --version
+
+3. Escribe este comando y presiona Enter:
+
+   python -m http.server 8000
+
+4. Deja abierta la ventana de PowerShell y abre Chrome.
+
+5. En la barra de direcciones de Chrome entra a:
+
+   http://localhost:8000
+
+6. Para detener el servidor, vuelve a PowerShell y presiona Ctrl+C.
+
+
+LISTA DE PRUEBA
+
+[ ] aparece la Home
+[ ] puedo escribir mi nombre
+[ ] puedo crear sala
+[ ] aparece código LOCAL
+[ ] llego al lobby
+[ ] puedo iniciar draft
+[ ] puedo completar 11 jugadores
+[ ] puedo enviar XI
+[ ] puedo iniciar Mundial
+[ ] aparecen rivales IA
+[ ] puedo avanzar por el torneo
+[ ] funcionan los penales
+[ ] puedo ser eliminado o llegar a la final
+[ ] aparece el campeón

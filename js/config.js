@@ -1,7 +1,8 @@
 // Configuración de Supabase.
 // 1. Crea un proyecto gratis en https://supabase.com
-// 2. Corre el SQL de supabase/schema.sql en el editor SQL del proyecto
-// 3. Pega aquí la URL del proyecto y la "anon public key"
+// 2. Sigue supabase/README.md: preflight, migración final y verificaciones.
+//    El esquema base original no está incluido; no uses el fixture de tests.
+// 3. Pega aquí la URL del proyecto y la clave pública (publishable o anon).
 //    (Settings → API → Project URL / anon key)
 //
 // Si quedan vacíos, el juego corre en MODO LOCAL (un solo jugador vs la máquina),
